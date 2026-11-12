@@ -206,7 +206,7 @@ describe("wallpaper builtin lifecycle", () => {
   it.each([
     { code: "superseded", message: "The media intent was superseded." },
     { code: "stale-document", message: "The document has changed." },
-    new Error("Error invoking remote method 'paseo:plugins:invoke': Error: Plugin client activation has been released."),
+    new Error("Error invoking remote method 'omp:plugins:invoke': Error: Plugin client activation has been released."),
   ] satisfies Array<Error | { code: WallpaperErrorCode; message: string }>)("recognizes already-revoked release results without hiding other errors", async failure => {
     const f = fixture(DEFAULT_WALLPAPER_CONFIGURATION, "manage");
     const reported: unknown[][] = [];

@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import type { QQBot } from '@tencent-connect/qqbot-nodejs';
 import type { PluginServiceContext, PluginStorage, PluginNativeApi } from '@omp-desktop/plugin/server';
-import type { PaseoAgentHandle, PaseoAgentStream, PaseoAgentObservation } from '@omp-desktop/client';
+import type { OmpAgentHandle, OmpAgentStream, OmpAgentObservation } from '@omp-desktop/client';
 import { Gateway } from './gateway.ts';
 import { Pairing, StateSchema, StateStore, PeerSchema, peerKey, type Peer } from './state.ts';
 import { SandboxFiles } from './sandbox-files.ts';
@@ -27,7 +27,7 @@ const cleanups:Array<()=>Promise<void>|void>=[];
 afterEach(async()=>{for(const cleanup of cleanups.splice(0).reverse())await cleanup();vi.restoreAllMocks();});
 interface NativeFiles { read(path:string,maxBytes?:number):Buffer;list(path:string):Array<{name:string;isDirectory:boolean;size:number;modifiedAt:number}>;mkdir(path:string):void;remove(path:string):void;close():void }
 interface TestRoute {
-  peer:Peer;agent:PaseoAgentHandle;unsubscribe:null;buffer:null;
+  peer:Peer;agent:OmpAgentHandle;unsubscribe:null;buffer:null;
   turnId?:string;target?:ReplyTarget;localTarget?:ReplyTarget;enabledDelivery:boolean;
   textRows:Map<number,string>;files:Map<string,{name:string;mimeType?:string;generatedTurnId?:string}>;
   toolRevisions:Map<string,string>;pending:Map<string,never>;chain:Promise<void>;lastSeq:number;
@@ -57,16 +57,16 @@ async function fixture(enabled=true,scope:'c2c'|'group'='c2c') {
   const store=new StateStore({get:async()=>({revision:0,values:structuredClone(values)}),patch:async(patch:unknown)=>{values=StateSchema.parse(patch);return{revision:0,values};}} as PluginStorage);
   const peer=PeerSchema.parse({appId:'app',scope,openid:'peer',hostId:'host',workspaceId:'workspace',agentId:'agent',cwd:root,sandbox:{root,...(enabled?{imageGeneration:true}:{})},preset:'default',template:values.config.presets[0],protocolPrompt:'QQ',lastDeliveredSequence:0});
   const target:ReplyTarget={scope,targetId:'peer',forceProactive:true};
-  const ctx={signal:new AbortController().signal,installation:{id:'installation',generation:7},paseo:{},native} as unknown as PluginServiceContext;
+  const ctx={signal:new AbortController().signal,installation:{id:'installation',generation:7},omp:{},native} as unknown as PluginServiceContext;
   const gateway=new Gateway(ctx,store,new Pairing(store),values.config,'fixture-secret',{debug:vi.fn(),info:vi.fn(),warn:vi.fn(),error:vi.fn()},vi.fn());
   cleanups.push(()=>gateway.dispose());
-  const internal=gateway as unknown as {files:SandboxFiles;root:string;routes:Map<string,TestRoute>;event(route:TestRoute,stream:PaseoAgentStream):Promise<void>;attach(peer:TestRoute['peer'],agent:PaseoAgentHandle):Promise<TestRoute>;command(context:unknown,text:string):Promise<void>;deliverFile(route:TestRoute,path:string,type:'image',target:ReplyTarget):Promise<void>;bot:QQBot;sender:{sendMarkdown(target:ReplyTarget,text:string):Promise<unknown>}};
+  const internal=gateway as unknown as {files:SandboxFiles;root:string;routes:Map<string,TestRoute>;event(route:TestRoute,stream:OmpAgentStream):Promise<void>;attach(peer:TestRoute['peer'],agent:OmpAgentHandle):Promise<TestRoute>;command(context:unknown,text:string):Promise<void>;deliverFile(route:TestRoute,path:string,type:'image',target:ReplyTarget):Promise<void>;bot:QQBot;sender:{sendMarkdown(target:ReplyTarget,text:string):Promise<unknown>}};
   internal.files=files;internal.root=root;
-  const route:TestRoute={peer,agent:{id:'agent'} as PaseoAgentHandle,unsubscribe:null,buffer:null,enabledDelivery:false,localTarget:target,textRows:new Map(),files:new Map(),toolRevisions:new Map(),pending:new Map(),chain:Promise.resolve(),lastSeq:0};
+  const route:TestRoute={peer,agent:{id:'agent'} as OmpAgentHandle,unsubscribe:null,buffer:null,enabledDelivery:false,localTarget:target,textRows:new Map(),files:new Map(),toolRevisions:new Map(),pending:new Map(),chain:Promise.resolve(),lastSeq:0};
   internal.routes.set(peerKey('app',scope,'peer'),route);
   const send=vi.spyOn(internal.bot,'sendImage').mockResolvedValue({upload:{file_uuid:'uploaded',file_info:'qq-media',ttl:60},message:undefined});
   const markdown=vi.spyOn(internal.sender,'sendMarkdown').mockResolvedValue(undefined);
-  const event=(event:unknown,seq=1,contentVersion=1)=>internal.event(route,{seq,contentVersion,event} as PaseoAgentStream);
+  const event=(event:unknown,seq=1,contentVersion=1)=>internal.event(route,{seq,contentVersion,event} as OmpAgentStream);
   const start=()=>event({type:'turn_started',turnId:'turn-current'},0);
   const complete=()=>event({type:'turn_completed',turnId:'turn-current'},3);
   return{root,files,store,gateway,internal,route,target,send,markdown,event,start,complete,setAfterRead:(hook:()=>Promise<void>)=>{afterRead=hook;}};
@@ -124,11 +124,11 @@ it('binds generated images to the route target and preserves send failure report
 
 it('restores only active-turn generated metadata on observation replay and sends it once',async()=>{
   const f=await fixture();
-  const agent={id:'agent',observe:async()=>({snapshot:{sandbox:f.route.peer.sandbox,pendingPermissions:[],activeTurn:{turnId:'turn-current'}},timeline:{window:{maxSeq:2},entries:[{seqEnd:1,turnId:'turn-old',item:item({metadata:{generatedImagesSource:'omp-sandbox-image',generatedImages:[{path:'.qqbot-media/generated/old.png',mimeType:'image/png'}]}})},{seqEnd:2,turnId:'turn-current',item:item()}]},unsubscribe:()=>{}} as unknown as PaseoAgentObservation)} as PaseoAgentHandle;
+  const agent={id:'agent',observe:async()=>({snapshot:{sandbox:f.route.peer.sandbox,pendingPermissions:[],activeTurn:{turnId:'turn-current'}},timeline:{window:{maxSeq:2},entries:[{seqEnd:1,turnId:'turn-old',item:item({metadata:{generatedImagesSource:'omp-sandbox-image',generatedImages:[{path:'.qqbot-media/generated/old.png',mimeType:'image/png'}]}})},{seqEnd:2,turnId:'turn-current',item:item()}]},unsubscribe:()=>{}} as unknown as OmpAgentObservation)} as OmpAgentHandle;
   const route=await f.internal.attach(f.route.peer,agent);
   expect([...route.files.keys()]).toEqual([imagePath]);
-  await f.internal.event(route,{seq:3,event:{type:'turn_completed',turnId:'turn-current'}} as PaseoAgentStream);
-  await f.internal.event(route,{seq:3,event:{type:'turn_completed',turnId:'turn-current'}} as PaseoAgentStream);
+  await f.internal.event(route,{seq:3,event:{type:'turn_completed',turnId:'turn-current'}} as OmpAgentStream);
+  await f.internal.event(route,{seq:3,event:{type:'turn_completed',turnId:'turn-current'}} as OmpAgentStream);
   expect(f.send).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({scope:'c2c',targetId:'peer'}),{buffer:png});
 });
 
@@ -155,18 +155,18 @@ it.each(['turn_canceled','turn_failed'] as const)('discards queued generated ima
 
 it('blocks image upload when /stop arrives during the pinned read',async()=>{
   const f=await fixture();await f.start();await f.event({type:'timeline',turnId:'turn-current',item:item()});
-  f.route.agent={id:'agent',stop:vi.fn(async()=>{})} as unknown as PaseoAgentHandle;
+  f.route.agent={id:'agent',stop:vi.fn(async()=>{})} as unknown as OmpAgentHandle;
   f.setAfterRead(()=>f.internal.command({replyTarget:f.target,message:{senderId:'peer'}},'/stop'));
   await expect(f.internal.deliverFile(f.route,imagePath,'image',f.target)).rejects.toThrow('回合已失效');
   expect(f.send).not.toHaveBeenCalled();
 });
 
 it('blocks a queued upload immediately when observation receives cancellation during the pinned read',async()=>{
-  const f=await fixture();let receive!:(stream:PaseoAgentStream)=>void;
-  const agent={id:'agent',observe:async(callback:typeof receive)=>{receive=callback;return{snapshot:{sandbox:f.route.peer.sandbox,pendingPermissions:[],activeTurn:{turnId:'turn-current'}},timeline:{window:{maxSeq:1},entries:[{seqEnd:1,turnId:'turn-current',item:item()}]},unsubscribe:()=>{}} as unknown as PaseoAgentObservation;}} as unknown as PaseoAgentHandle;
+  const f=await fixture();let receive!:(stream:OmpAgentStream)=>void;
+  const agent={id:'agent',observe:async(callback:typeof receive)=>{receive=callback;return{snapshot:{sandbox:f.route.peer.sandbox,pendingPermissions:[],activeTurn:{turnId:'turn-current'}},timeline:{window:{maxSeq:1},entries:[{seqEnd:1,turnId:'turn-current',item:item()}]},unsubscribe:()=>{}} as unknown as OmpAgentObservation;}} as unknown as OmpAgentHandle;
   const route=await f.internal.attach(f.route.peer,agent);
-  f.setAfterRead(async()=>{receive({seq:3,event:{type:'turn_canceled',turnId:'turn-current'}} as PaseoAgentStream);});
-  receive({seq:2,event:{type:'turn_completed',turnId:'turn-current'}} as PaseoAgentStream);
+  f.setAfterRead(async()=>{receive({seq:3,event:{type:'turn_canceled',turnId:'turn-current'}} as OmpAgentStream);});
+  receive({seq:2,event:{type:'turn_completed',turnId:'turn-current'}} as OmpAgentStream);
   await route.chain;
   expect(f.send).not.toHaveBeenCalled();
 });

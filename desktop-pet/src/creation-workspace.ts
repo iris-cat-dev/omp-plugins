@@ -36,7 +36,7 @@ const manifest = path.join(__dirname, "pet.json");
 if (!fs.existsSync(manifest)) { console.error("Write a complete pet.json before installing your pet."); process.exit(1); }
 const args = ${JSON.stringify(runtimeArgs)}.concat(["--desktop-pet-install", manifest]);
 if (process.argv[2]) args.push("--input-image", path.resolve(process.argv[2]));
-const env = { ...process.env, PASEO_ELECTRON_USER_DATA_DIR: ${JSON.stringify(options.userDataPath)} };
+const env = { ...process.env, OMP_ELECTRON_USER_DATA_DIR: ${JSON.stringify(options.userDataPath)} };
 delete env.ELECTRON_RUN_AS_NODE;
 const result = spawnSync(${JSON.stringify(options.executablePath)}, args, { cwd: __dirname, env, stdio: "inherit", windowsHide: true });
 if (result.error) { console.error(result.error.message); process.exit(1); }

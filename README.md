@@ -21,7 +21,9 @@ npm run build:desktop-plugins
 npx tsc --noEmit -p packages/plugin/tsconfig.examples.json
 ```
 
-Existing source-plugin examples keep their `paseo-plugin.json` and `@getpaseo/plugin` compatibility contract. Load them from `plugins/examples/<name>` in Desktop.
+Source-plugin examples use an id-only `omp-plugin.json` and import `@omp-desktop/plugin` or `@omp-desktop/plugin/server`. Load them from `plugins/examples/<name>` in Desktop.
+
+Plugin callbacks access the host through `context.omp`; React surfaces use `useOmp()`. The client SDK exposes `OmpApi`, `OmpAgent`, `createOmpApi()` and `createOmpClient()`. The pet authoring helper and Desktop development launcher use `OMP_ELECTRON_USER_DATA_DIR` to select the user-data directory. Plugin hosts and callers must use these names together; obsolete aliases are not provided.
 
 Commit and push changes here before updating Desktop's submodule pointer. Generated `dist/` and `node_modules/` directories stay out of this repository.
 

@@ -1,12 +1,12 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { createActivationScope, createPluginPaseoApi } from '@omp-desktop/plugin/server';
+import { createActivationScope, createPluginOmpApi } from '@omp-desktop/plugin/server';
 import { mkdtemp, realpath, rm, stat, symlink } from 'node:fs/promises';
 import { tmpdir, homedir } from 'node:os';
 import type * as Os from 'node:os';
 import { basename, join, parse } from 'node:path';
 import type { PluginInstallation, PluginServiceContext, PluginStorage } from '@omp-desktop/plugin/server';
-import type { PaseoApi, PaseoAgentHandle, PaseoAgentCreateOptions, PaseoAgentObservation, PaseoAgentStream } from '@omp-desktop/client';
+import type { OmpApi, OmpAgentHandle, OmpAgentCreateOptions, OmpAgentObservation, OmpAgentStream } from '@omp-desktop/client';
 import { Gateway } from './gateway.ts';
 import { Pairing, StateSchema, StateStore, peerKey, type Peer } from './state.ts';
 import * as media from './media.ts';
@@ -38,11 +38,11 @@ async function fixture(sandboxPath?: string, provider = 'omp', presentedFiles = 
   const old = { id: 'old-agent', stop: vi.fn(async () => {}), refresh: vi.fn(async () => ({ agent: { id: 'old-agent', sandbox: undefined as Peer['sandbox'] } })) };
   const list = vi.fn(async (_options?: { page?: { cursor?: string } }): Promise<AgentDirectoryFixture> => ({ entries: [await old.refresh()], pageInfo: { nextCursor: null, prevCursor: null, hasMore: false } }));
   const unsubscribe = vi.fn();
-  const fresh = { id: 'new-agent', stop: vi.fn(async () => {}), observe: vi.fn(async () => ({ snapshot: { sandbox: { root }, pendingPermissions: [], activeTurn: null }, timeline: { window: { maxSeq: 0 }, entries: [] }, unsubscribe } as unknown as PaseoAgentObservation)) };
-  const create = vi.fn(async (_options: PaseoAgentCreateOptions) => fresh as unknown as PaseoAgentHandle);
+  const fresh = { id: 'new-agent', stop: vi.fn(async () => {}), observe: vi.fn(async () => ({ snapshot: { sandbox: { root }, pendingPermissions: [], activeTurn: null }, timeline: { window: { maxSeq: 0 }, entries: [] }, unsubscribe } as unknown as OmpAgentObservation)) };
+  const create = vi.fn(async (_options: OmpAgentCreateOptions) => fresh as unknown as OmpAgentHandle);
   const occupiedWorkspaces = new Set<string>();
   let workspaceSequence = 0;
-  const workspace = (id: string) => ({ id, agents: { create: async (options: PaseoAgentCreateOptions) => {
+  const workspace = (id: string) => ({ id, agents: { create: async (options: OmpAgentCreateOptions) => {
     if (occupiedWorkspaces.has(id)) throw new Error('Workspace already has an unarchived root agent');
     const agent = await create(options);
     occupiedWorkspaces.add(id);
@@ -54,11 +54,11 @@ async function fixture(sandboxPath?: string, provider = 'omp', presentedFiles = 
   const scope = createActivationScope(1);
   cleanups.push(() => scope.dispose());
   const installation: PluginInstallation = { id: 'installation', packageId: packageMetadata.name, owner: 'daemon', version: packageMetadata.version, generation: scope.generation, enabled: true, declaredCapabilities: packageMetadata.ompDesktop.capabilities, grantedCapabilities: packageMetadata.ompDesktop.capabilities };
-  const paseo = createPluginPaseoApi({ hostId: 'host', agents: { list, ref: vi.fn(() => old) }, workspaces: { open, create: createWorkspace } } as unknown as PaseoApi, installation, scope, { mode: 'active' });
-  const ctx = { signal: scope.signal, installation, native, paseo } as unknown as PluginServiceContext;
+  const omp = createPluginOmpApi({ hostId: 'host', agents: { list, ref: vi.fn(() => old) }, workspaces: { open, create: createWorkspace } } as unknown as OmpApi, installation, scope, { mode: 'active' });
+  const ctx = { signal: scope.signal, installation, native, omp } as unknown as PluginServiceContext;
   const gateway = new Gateway(ctx, store, new Pairing(store), values.config, 'fixture-secret', { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }, vi.fn());
   cleanups.push(() => gateway.dispose());
-  const internal = gateway as unknown as { getOrCreate(scope: 'c2c' | 'group', openid: string, reset?: boolean): Promise<{ peer: Peer; agent: PaseoAgentHandle }>; routes: Map<string, unknown>; event(route: unknown, stream: PaseoAgentStream): Promise<void>; deliverFile(route:unknown,path:string,type:string,target:unknown):Promise<void>; sender: { sendMarkdown: (...args: unknown[]) => Promise<unknown> }; bot: { start():Promise<void>;sendImage:(...args:unknown[])=>Promise<unknown>;apiClient: { request: (...args: unknown[]) => Promise<unknown> } }; deliveryRoute: { run<T>(route: unknown, callback: () => T): T } };
+  const internal = gateway as unknown as { getOrCreate(scope: 'c2c' | 'group', openid: string, reset?: boolean): Promise<{ peer: Peer; agent: OmpAgentHandle }>; routes: Map<string, unknown>; event(route: unknown, stream: OmpAgentStream): Promise<void>; deliverFile(route:unknown,path:string,type:string,target:unknown):Promise<void>; sender: { sendMarkdown: (...args: unknown[]) => Promise<unknown> }; bot: { start():Promise<void>;sendImage:(...args:unknown[])=>Promise<unknown>;apiClient: { request: (...args: unknown[]) => Promise<unknown> } }; deliveryRoute: { run<T>(route: unknown, callback: () => T): T } };
   const saved = (sandbox?: Peer['sandbox']): Peer => ({ appId: 'saved-app', scope: 'c2c', openid: 'peer', hostId: 'host', workspaceId: 'old-workspace', agentId: old.id, cwd: sandbox?.root ?? root, sandbox, preset: 'default', template: values.config.presets[0]!, protocolPrompt: 'Old QQ context', lastDeliveredSequence: 4 });
   return { ctx, root, key, store, old, fresh, create, internal, gateway, unsubscribe, saved, native, list, occupiedWorkspaces };
 }
@@ -80,7 +80,7 @@ it('keeps private and group peers independent in one sandbox, including group re
   f.create.mockImplementation(async () => {
     const agent = { ...f.fresh, id: `peer-agent-${snapshots.length + 1}`, stop: vi.fn(async () => {}) };
     snapshots.push({ agent: { id: agent.id, sandbox: { root: f.root } } });
-    return agent as unknown as PaseoAgentHandle;
+    return agent as unknown as OmpAgentHandle;
   });
   f.list.mockImplementation(async () => ({ entries: snapshots, pageInfo: { nextCursor: null, prevCursor: null, hasMore: false } }));
   const direct = await f.internal.getOrCreate('c2c', 'peer');
@@ -108,7 +108,7 @@ it.each([{ javascript: true, network: false, imageGeneration: false }, { javascr
   if(capabilities.imageGeneration)sandbox.imageGeneration=true;
   await f.store.mutate(state => { state.peers[f.key] = f.saved({ root: f.root }); });
   f.old.refresh.mockResolvedValue({ agent: { id: f.old.id, sandbox: { root: f.root } } });
-  f.fresh.observe.mockResolvedValue({ snapshot: { sandbox, pendingPermissions: [], activeTurn: null }, timeline: { window: { maxSeq: 0 }, entries: [] }, unsubscribe: f.unsubscribe } as unknown as PaseoAgentObservation);
+  f.fresh.observe.mockResolvedValue({ snapshot: { sandbox, pendingPermissions: [], activeTurn: null }, timeline: { window: { maxSeq: 0 }, entries: [] }, unsubscribe: f.unsubscribe } as unknown as OmpAgentObservation);
   const route = await f.internal.getOrCreate('c2c', 'peer');
   expect(route.peer.agentId).toBe(f.fresh.id);
   expect(route.peer.sandbox).toEqual(sandbox);
@@ -204,14 +204,14 @@ it.each(['root', 'javascript', 'network', 'imageGeneration'] as const)('does not
 
 it('stops a stale create after root change and never stores or attaches it', async () => {
   const f = await fixture();
-  const created = Promise.withResolvers<PaseoAgentHandle>();
+  const created = Promise.withResolvers<OmpAgentHandle>();
   const called = Promise.withResolvers<void>();
   f.create.mockImplementation(() => { called.resolve(); return created.promise; });
   const work = f.internal.getOrCreate('c2c', 'peer');
   const settled = work.catch(error => error);
   await called.promise;
   await f.store.mutate(state => { state.config.sandboxPath = join(f.root, 'next'); });
-  created.resolve(f.fresh as unknown as PaseoAgentHandle);
+  created.resolve(f.fresh as unknown as OmpAgentHandle);
   expect(await settled).toBeInstanceOf(Error);
   expect(f.fresh.stop).toHaveBeenCalled();
   expect(f.fresh.observe).not.toHaveBeenCalled();
@@ -221,7 +221,7 @@ it('stops a stale create after root change and never stores or attaches it', asy
 
 it('rejects unconfirmed sandbox observation instead of reusing the route', async () => {
   const f = await fixture();
-  f.fresh.observe.mockResolvedValue({ snapshot: { pendingPermissions: [], activeTurn: null }, timeline: { window: { maxSeq: 0 }, entries: [] }, unsubscribe: f.unsubscribe } as unknown as PaseoAgentObservation);
+  f.fresh.observe.mockResolvedValue({ snapshot: { pendingPermissions: [], activeTurn: null }, timeline: { window: { maxSeq: 0 }, entries: [] }, unsubscribe: f.unsubscribe } as unknown as OmpAgentObservation);
   await expect(f.internal.getOrCreate('c2c', 'peer')).rejects.toThrow('未确认');
   expect(f.fresh.stop).toHaveBeenCalled();
   expect(f.unsubscribe).toHaveBeenCalled();
@@ -233,7 +233,7 @@ it('blocks retired route events and SDK retry HTTP requests', async () => {
   const route = await f.internal.getOrCreate('c2c', 'peer');
   f.internal.routes.delete(f.key);
   const send = vi.spyOn(f.internal.sender, 'sendMarkdown');
-  await f.internal.event(route, { event: { type: 'turn_failed', error: 'HOST_SECRET' } } as unknown as PaseoAgentStream);
+  await f.internal.event(route, { event: { type: 'turn_failed', error: 'HOST_SECRET' } } as unknown as OmpAgentStream);
   expect(send).not.toHaveBeenCalled();
   await expect(f.internal.deliveryRoute.run(route, () => f.internal.bot.apiClient.request('token', 'POST', '/v2/users/peer/messages', {}))).rejects.toThrow('generation');
 });
@@ -243,7 +243,7 @@ it('blocks stale old-root delivery immediately after storage changes', async () 
   const route = await f.internal.getOrCreate('c2c', 'peer');
   await f.store.mutate(state => { state.config.sandboxPath = join(f.root, 'next'); });
   const send = vi.spyOn(f.internal.sender, 'sendMarkdown');
-  await f.internal.event(route, { event: { type: 'turn_failed', error: 'HOST_SECRET' } } as unknown as PaseoAgentStream);
+  await f.internal.event(route, { event: { type: 'turn_failed', error: 'HOST_SECRET' } } as unknown as OmpAgentStream);
   expect(send).not.toHaveBeenCalled();
   await expect(f.internal.bot.apiClient.request('token', 'POST', '/v2/users/peer/messages', {})).rejects.toThrow('沙箱配置');
 });
@@ -253,7 +253,7 @@ it('rejects filesystem root and user home as sandbox roots', async () => {
   for (const broad of [homedir(), parse(f.root).root]) {
     await f.store.mutate(s => { s.config.sandboxPath = broad; });
     const config = (await f.store.read()).values.config;
-    const ctx = { signal: new AbortController().signal, installation: { id: 'installation', generation: 1 }, paseo: {} } as unknown as PluginServiceContext;
+    const ctx = { signal: new AbortController().signal, installation: { id: 'installation', generation: 1 }, omp: {} } as unknown as PluginServiceContext;
     const gateway = new Gateway(ctx, f.store, new Pairing(f.store), config, 'fixture-secret', { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }, vi.fn());
     cleanups.push(() => gateway.dispose());
     await expect(gateway.start()).rejects.toThrow('根目录或用户主目录');
@@ -263,7 +263,7 @@ it('rejects filesystem root and user home as sandbox roots', async () => {
 it('blank path creates a dedicated private directory in an isolated home', async () => {
   const f=await fixture('');isolatedHome.path=f.root;
   const expected=join(f.root,'.omp','qqbot-sandbox','installation');
-  f.fresh.observe.mockResolvedValue({snapshot:{sandbox:{root:expected},pendingPermissions:[],activeTurn:null},timeline:{window:{maxSeq:0},entries:[]},unsubscribe:f.unsubscribe} as unknown as PaseoAgentObservation);
+  f.fresh.observe.mockResolvedValue({snapshot:{sandbox:{root:expected},pendingPermissions:[],activeTurn:null},timeline:{window:{maxSeq:0},entries:[]},unsubscribe:f.unsubscribe} as unknown as OmpAgentObservation);
   const route=await f.internal.getOrCreate('c2c','peer');
   expect(route.peer.sandbox?.root).toBe(expected);
   expect((await stat(expected)).mode&0o077).toBe(0);

@@ -1,4 +1,4 @@
-import type { PluginContext } from "@getpaseo/plugin";
+import type { PluginContext } from "@omp-desktop/plugin";
 
 export default function contribute(plugin: PluginContext) {
   plugin.addTheme({
