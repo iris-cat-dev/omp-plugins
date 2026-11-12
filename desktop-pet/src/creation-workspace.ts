@@ -5,10 +5,8 @@ import type { PetCreationWorkspace } from "./types.js";
 
 interface PetCreationOptions {
   userDataPath: string;
-  skillPath: string;
+  pluginDirectory: string;
   executablePath: string;
-  appPath: string;
-  packaged: boolean;
   description?: string;
   referencePreview: Buffer;
 }
@@ -26,18 +24,17 @@ export async function createPetCreationWorkspace(
   const skillDirectory = path.join(cwd, ".omp", "skills", "hatch-pet");
   await mkdir(skillDirectory, { recursive: true });
   try {
-    await copyFile(options.skillPath, path.join(skillDirectory, "SKILL.md"));
+    await copyFile(path.join(options.pluginDirectory, "assets", "skills", "hatch-pet", "SKILL.md"), path.join(skillDirectory, "SKILL.md"));
     await writeFile(path.join(cwd, "iris-reference.png"), options.referencePreview);
-    const runtimeArgs = options.packaged ? [] : [options.appPath];
     const helper = `const fs = require("node:fs");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const manifest = path.join(__dirname, "pet.json");
 if (!fs.existsSync(manifest)) { console.error("Write a complete pet.json before installing your pet."); process.exit(1); }
-const args = ${JSON.stringify(runtimeArgs)}.concat(["--desktop-pet-install", manifest]);
+const args = [${JSON.stringify(path.join(options.pluginDirectory, "dist", "cjs", "install-pet.js"))}, manifest];
 if (process.argv[2]) args.push("--input-image", path.resolve(process.argv[2]));
 const env = { ...process.env, OMP_ELECTRON_USER_DATA_DIR: ${JSON.stringify(options.userDataPath)} };
-delete env.ELECTRON_RUN_AS_NODE;
+env.ELECTRON_RUN_AS_NODE = "1";
 const result = spawnSync(${JSON.stringify(options.executablePath)}, args, { cwd: __dirname, env, stdio: "inherit", windowsHide: true });
 if (result.error) { console.error(result.error.message); process.exit(1); }
 process.exit(result.status === null ? 1 : result.status);
@@ -65,10 +62,10 @@ process.exit(result.status === null ? 1 : result.status);
     brief
       ? `User's pet brief: ${JSON.stringify(brief)}`
       : "Ask me what pet I want and whether I have reference images before generating artwork.",
-    "Keep all authoring files in this workspace. iris-reference.png shows the built-in pet only as an optional style reference; do not copy its identity unless requested.",
+    "Keep all authoring files in this workspace. iris-reference.png shows the plugin-provided Iris pet only as an optional style reference; do not copy its identity unless requested.",
     "Create this pet's own bubble.appearance and all eight bubble.states rules: original dialogue, deliberate silence, and appearance/hide/repeat timing. Do not inherit Iris's bubble or stock chatter. Review actual animation frames and bubble behavior, not just image dimensions.",
     "Finish by running the included install-pet helper successfully. It validates the real pet package and installs it in OMP's local pet library without changing the selected pet.",
-    "After success, tell me to open Settings > Plugins > Desktop pet, click Refresh, and select the new pet. Do not claim success without the helper's successful output.",
+    "After success, tell me to open Settings > Plugins > Desktop pet > Configure, click Refresh, and select the new pet. Do not claim success without the helper's successful output.",
   ].join("\n\n");
   return { cwd, initialPrompt };
 }

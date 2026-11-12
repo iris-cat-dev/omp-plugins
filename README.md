@@ -1,6 +1,6 @@
 # omp-plugins
 
-Builtin plugins and source examples for [OMP Desktop](https://github.com/iris-cat-dev/omp).
+Optional folder-installed plugins and source examples for [OMP Desktop](https://github.com/iris-cat-dev/omp).
 
 - `agent-speed/`: live agent output speed.
 - `wallpaper/`: wallpaper selection and rendering.
@@ -26,6 +26,20 @@ Source-plugin examples use an id-only `omp-plugin.json` and import `@omp-desktop
 Plugin callbacks access the host through `context.omp`; React surfaces use `useOmp()`. The client SDK exposes `OmpApi`, `OmpAgent`, `createOmpApi()` and `createOmpClient()`. The pet authoring helper and Desktop development launcher use `OMP_ELECTRON_USER_DATA_DIR` to select the user-data directory. Plugin hosts and callers must use these names together; obsolete aliases are not provided.
 
 Commit and push changes here before updating Desktop's submodule pointer. Generated `dist/` and `node_modules/` directories stay out of this repository.
+
+## Desktop pet authoring
+
+The Desktop pet package owns [`assets/skills/hatch-pet/SKILL.md`](desktop-pet/assets/skills/hatch-pet/SKILL.md). Desktop's core `skills/` catalog does not contain it. **Create with OMP** copies it into the new workspace's `.omp/skills/hatch-pet/`, alongside the installation helpers and optional Iris reference.
+
+Build the plugin from the Desktop checkout root:
+
+```sh
+npm run build --workspace=@omp-desktop/plugin-desktop-pet
+```
+
+`PetLibraryOptions.pluginDirectory` is the installed plugin package root; the creator resolves both its skill and `dist/cjs/install-pet.js` from that directory. The helpers execute the plugin installer with bundled Electron in Node mode and `OMP_ELECTRON_USER_DATA_DIR`, keeping the existing local `pets/` library. They do not launch Desktop's GUI or invoke `--desktop-pet-install`. New image-based authoring requires a complete bubble profile; existing completed packages without profiles remain importable.
+
+Distribute the plugin with its runtime dependencies, including `sharp` and its native libraries for the target OS/architecture. The converter supports PNG/JPEG/WebP, keys opaque green backgrounds, and preserves already-transparent artwork. Verify the helper with the target bundled runtime rather than assuming a development Node run establishes native compatibility. Removing the plugin leaves ordinary authoring workspaces and conversations intact; helpers still require the installed plugin. Open a new authoring workspace to use updated copied instructions and scripts.
 
 ## QQ message completion
 

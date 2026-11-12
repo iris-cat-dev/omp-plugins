@@ -26,6 +26,6 @@
     "entries": { "client": "./dist/esm/client.js", "service": "./dist/esm/service.js" },
     "capabilities": ["native.overlay", "files.scoped", "native.dialog", "native.navigation", "agents.events"]
   },
-  "dependencies": { "@omp-desktop/plugin": "0.7.0", "@omp-desktop/client": "*", "@omp-desktop/protocol": "*", "zod": "^4.4.3" },
+  "dependencies": { "@omp-desktop/plugin": "0.7.0", "@omp-desktop/client": "*", "@omp-desktop/protocol": "*", "sharp": "^0.35.4", "zod": "^4.4.3" },
   "peerDependencies": { "react": "*", "react-native": "*" }
 }

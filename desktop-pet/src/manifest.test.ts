@@ -2,23 +2,14 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { tryRunPetCreationCli } from "./creation-cli.js";
+import { installPetPackage } from "./creation-cli.js";
 import { PetLibrary } from "./library.js";
 import { parsePetManifest, validatePetSheet } from "./manifest.js";
 import type { PetBubbleProfile, PetBubbleState, PetDescriptor } from "./types.js";
 
-const electron = vi.hoisted(() => ({
-  whenReady: vi.fn(async () => undefined),
-  exit: vi.fn(),
-  convertImage: vi.fn(),
-}));
-
-
 const temporaryDirectories: string[] = [];
-const originalArgv = process.argv;
 
 afterEach(async () => {
-  process.argv = originalArgv;
   vi.restoreAllMocks();
   vi.clearAllMocks();
   await Promise.all(
@@ -94,10 +85,8 @@ function petLibrary(root: string): PetLibrary {
   return new PetLibrary({
     builtInDirectory: path.join(root, "built-in"),
     userDataPath: path.join(root, "user-data"),
-    skillPath: path.join(root, "skill"),
+    pluginDirectory: root,
     executablePath: process.execPath,
-    appPath: root,
-    packaged: false,
     decodeImage: (data) => ({ width: data.readUInt32BE(16), height: data.readUInt32BE(20), bitmap: Buffer.from([0, 0, 0, 255, 0, 0, 0, 0]), preview: data }),
   });
 }
@@ -391,7 +380,7 @@ describe("pet profile package compatibility", () => {
   });
 
   it.each(["missing", "incomplete"])(
-    "rejects %s new-authoring profiles before Electron readiness or image conversion",
+    "rejects %s new-authoring profiles before image conversion without changing source files",
     async (kind) => {
       const root = await temporaryRoot();
       const value =
@@ -400,18 +389,14 @@ describe("pet profile package compatibility", () => {
           : { ...manifest, bubble: { appearance: bubbleProfile().appearance } };
       const content = await writePackage(root, value);
       const sprite = await readFile(path.join(root, "sprites.png"));
-      process.argv = [
-        process.execPath,
-        "--desktop-pet-install",
-        path.join(root, "pet.json"),
-        "--input-image",
-        path.join(root, "generated.webp"),
-      ];
-      vi.spyOn(console, "error").mockImplementation(() => undefined);
-      expect(await tryRunPetCreationCli({ argv: process.argv, ready: electron.whenReady, exit: electron.exit, convertImage: electron.convertImage, library: petLibrary(root) })).toBe(true);
-      expect(electron.exit).toHaveBeenCalledWith(1);
-      expect(electron.whenReady).not.toHaveBeenCalled();
-      expect(electron.convertImage).not.toHaveBeenCalled();
+      const convertImage = vi.fn();
+      await expect(installPetPackage({
+        manifestPath: path.join(root, "pet.json"),
+        inputImage: path.join(root, "generated.webp"),
+        convertImage,
+        library: petLibrary(root),
+      })).rejects.toThrow(TypeError);
+      expect(convertImage).not.toHaveBeenCalled();
       expect(await readFile(path.join(root, "pet.json"), "utf8")).toBe(content);
       expect(await readFile(path.join(root, "sprites.png"))).toEqual(sprite);
     },

@@ -22,11 +22,9 @@ interface PetEntry {
 export interface PetLibraryOptions {
   builtInDirectory: string;
   userDataPath: string;
-  skillPath: string;
+  pluginDirectory: string;
   executablePath: string;
-  appPath: string;
-  packaged: boolean;
-  decodeImage(data: Buffer, crop: { x: number; y: number; width: number; height: number }): { width: number; height: number; bitmap: Buffer; preview: Buffer };
+  decodeImage(data: Buffer, crop: { x: number; y: number; width: number; height: number }): { width: number; height: number; bitmap: Buffer; preview: Buffer } | Promise<{ width: number; height: number; bitmap: Buffer; preview: Buffer }>;
 }
 
 async function readRegularFile(
@@ -79,7 +77,7 @@ async function readPetEntry(directory: string, id: string, builtIn: boolean, dec
   }
   const spriteData = await readRegularFile(spritePath, MAX_PET_IMAGE_BYTES, archiveMember);
   const { width, height } = validatePetSheet(spriteData, manifest);
-  const image = decodeImage(spriteData, { x: 0, y: manifest.animations.idle.row * manifest.frameHeight, width: manifest.frameWidth, height: manifest.frameHeight });
+  const image = await decodeImage(spriteData, { x: 0, y: manifest.animations.idle.row * manifest.frameHeight, width: manifest.frameWidth, height: manifest.frameHeight });
   if (image.width !== width || image.height !== height) throw new TypeError("Pet spritesheet is not a decodable PNG.");
   const bitmap = image.bitmap;
   let visible = false;
