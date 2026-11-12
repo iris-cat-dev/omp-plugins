@@ -1,0 +1,12 @@
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+.plugin-declarations.json
+.env
+.env.*
+*.log
+.DS_Store
+.debug/
+.tasks/
+test-results/
