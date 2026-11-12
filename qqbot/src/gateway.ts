@@ -23,7 +23,7 @@ import { z } from 'zod';
 const PresentedFilesSchema=z.array(z.object({path:z.string().min(1),mimeType:z.string().optional(),name:z.string().optional()}));
 const GeneratedImagesSchema=z.array(z.object({path:z.string().refine(path=>{try{return sandboxRelativePath(path)===path&&/^\.qqbot-media\/generated\/[^/]+$/.test(path);}catch{return false;}}),mimeType:z.enum(['image/png','image/jpeg','image/webp','image/gif']),name:z.string().optional()}));
 interface PendingInput {target:ReplyTarget;done:()=>void;fail:(error:unknown)=>void;owned:boolean;turnId?:string}
-interface Route { peer: Peer; agent: OmpAgentHandle; unsubscribe: (() => void) | null; buffer: OutboundBuffer | null; turnId?: string; canceledTurnId?: string; target?: ReplyTarget; textRows: Map<number,string>; files:Map<string,{name:string;mimeType?:string;generatedTurnId?:string}>; toolRevisions:Map<string,string>; chain: Promise<void>; pending: Map<string,PendingInput>; localTarget?: ReplyTarget; lastSeq: number; enabledDelivery: boolean }
+interface Route { peer: Peer; agent: OmpAgentHandle; unsubscribe: (() => void) | null; buffer: OutboundBuffer | null; turnId?: string; canceledTurnId?: string; target?: ReplyTarget; textRows: Map<number,string>; files:Map<string,{name:string;mimeType?:string;generatedTurnId?:string}>; toolRevisions:Map<string,string>; chain: Promise<void>; pending: Map<string,PendingInput>; localTarget?: ReplyTarget; epoch?: string; lastSeq: number; enabledDelivery: boolean }
 class SandboxConfirmationError extends Error {}
 export class Gateway {
   readonly controller = new AbortController();
@@ -248,6 +248,7 @@ export class Gateway {
     route.unsubscribe=observation.unsubscribe;
     if(!await this.currentConfig()||this.routes.get(key)!==route||!this.matchesSandbox(observation.snapshot.sandbox,peer.cwd)){this.retireRoute(route);throw new SandboxConfirmationError('Desktop agent 未确认当前 QQ 沙箱；路由已停止，历史保留');}
     route.lastSeq=observation.timeline.window.maxSeq;
+    route.epoch=observation.timeline.epoch;
     for(const row of observation.timeline.entries)if(row.item.type==='assistant_message')route.textRows.set(row.seqEnd,row.item.text);
     let lastUser:{clientMessageId?:string;messageId?:string;sourceKind?:'user'|'service'|'agent';sourceAgentId?:string}|undefined;
     for(let index=observation.timeline.entries.length-1;index>=0;index--){const item=observation.timeline.entries[index]!.item;if(item.type==='user_message'){lastUser=item;break;}}
@@ -288,10 +289,12 @@ export class Gateway {
   private async event(route:Route,stream:OmpAgentStream){
     if(!await this.currentConfig()||this.routes.get(peerKey(route.peer.appId,route.peer.scope,route.peer.openid))!==route)return;const event=stream.event;
     if(event.type!=='turn_started'&&'turnId' in event&&event.turnId&&route.turnId&&event.turnId!==route.turnId)return;
-    if(event.type==='timeline'&&event.item.type==='user_message'&&stream.seq!==undefined&&stream.seq<=route.lastSeq)return;
+    if(stream.epoch!==undefined&&stream.epoch!==route.epoch){route.epoch=stream.epoch;route.lastSeq=0;route.textRows.clear();route.toolRevisions.clear();}
     if(event.type==='turn_started'){route.turnId=event.turnId;route.enabledDelivery=!!route.localTarget;route.target=route.localTarget;route.buffer?.cancel();route.buffer=null;route.textRows.clear();route.files.clear();route.toolRevisions.clear();}
     if(event.type==='timeline'&&event.item.type==='user_message'){
       const item=event.item as typeof event.item&{clientMessageId?:string;sourceKind?:'user'|'service'|'agent'};const pending=route.pending.get(item.clientMessageId??item.messageId??'');
+      // A submitted message belongs to this route even if history was renumbered.
+      if(!pending&&stream.seq!==undefined&&stream.seq<=route.lastSeq)return;
       if(pending){pending.owned=true;pending.turnId=event.turnId??route.turnId;}
       route.enabledDelivery=!!pending||this.originDelivery(route.peer.scope,item);
       route.target=pending?.target??{scope:route.peer.scope,targetId:route.peer.openid,forceProactive:true};
@@ -314,12 +317,17 @@ export class Gateway {
     if(event.type==='turn_completed'||event.type==='turn_failed'||event.type==='turn_canceled'){
       if(event.type==='turn_canceled')route.canceledTurnId=route.turnId;
       if(event.type!=='turn_completed')for(const [path,file] of route.files)if(file.generatedTurnId)route.files.delete(path);
+      let deliveryError:unknown;
       try {
       if(route.buffer){if(event.type==='turn_completed')await route.buffer.flush();else route.buffer.cancel();route.buffer=null;}
       if(event.type==='turn_failed'&&route.enabledDelivery&&route.target)await this.sender.sendMarkdown(route.target,'对话失败，请在 Desktop 查看详情。');
       if(route.enabledDelivery&&route.target&&route.files.size){let index=0;const missed:string[]=[];for(const [path,file] of route.files){if(index++>=this.config.sendFile.maxFiles){missed.push('文件超出单轮上限');continue;}try{await this.deliverFile(route,path,file.mimeType?.startsWith('image/')?'image':mediaType(path),route.target);}catch{missed.push('文件未通过沙箱投递检查');}}if(missed.length)for(const chunk of chunkMarkdownText(`文件未投递：\n${missed.join('\n')}`,this.config.textChunkLimit))await this.sender.sendMarkdown(route.target,chunk);route.files.clear();}
+      } catch(error) {
+        deliveryError=error;
+        throw error;
       } finally {
-      for(const pending of route.pending.values()){if(!pending.owned||(pending.turnId&&event.turnId&&pending.turnId!==event.turnId))continue;if(event.type==='turn_failed')pending.fail(new Error(event.error));else pending.done();}
+      route.buffer?.cancel();route.buffer=null;
+      for(const pending of route.pending.values()){if(!pending.owned||(pending.turnId&&event.turnId&&pending.turnId!==event.turnId))continue;if(deliveryError!==undefined)pending.fail(deliveryError);else if(event.type==='turn_failed')pending.fail(new Error(event.error));else pending.done();}
       route.enabledDelivery=false;route.target=undefined;
       if(stream.seq!==undefined)route.lastSeq=Math.max(route.lastSeq,stream.seq);
       await this.store.mutate(s=>{const p=s.peers[peerKey(route.peer.appId,route.peer.scope,route.peer.openid)];if(p?.agentId===route.peer.agentId)p.lastDeliveredSequence=route.lastSeq;});

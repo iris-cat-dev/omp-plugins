@@ -27,6 +27,12 @@ Plugin callbacks access the host through `context.omp`; React surfaces use `useO
 
 Commit and push changes here before updating Desktop's submodule pointer. Generated `dist/` and `node_modules/` directories stay out of this repository.
 
+## QQ message completion
+
+QQ conversations share a serial queue per peer. Timeline sequence numbers belong to an epoch; idle resume or history reconstruction can renumber them. The gateway resets its sequence and revision caches when the epoch changes and recognizes submitted inputs by `clientMessageId`, including lower-sequence events. Completing a reply releases the next queued message immediately. Static delivery errors reject the input with the original error instead of silently reporting success; the generated reply remains in the Desktop conversation.
+
+The persisted `lastDeliveredSequence` is a processed timeline watermark, not a Tencent delivery receipt. Failed replies are not automatically retried.
+
 ## License
 
 AGPL-3.0-or-later, except components carrying their own license; `qqbot/LICENSE` retains its MIT license.

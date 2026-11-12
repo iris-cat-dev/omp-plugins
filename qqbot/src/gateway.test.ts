@@ -1,5 +1,6 @@
 import { expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
+import { setImmediate as nextImmediate } from 'node:timers/promises';
 import { createActivationScope, createPluginOmpApi } from '@omp-desktop/plugin/server';
 import type { PluginInstallation, PluginServiceContext, PluginStorage } from '@omp-desktop/plugin/server';
 import { QQBot, type MiddlewareContext } from '@tencent-connect/qqbot-nodejs';
@@ -92,6 +93,82 @@ it.each([false, true])('failed tool events stay internal while the final reply s
     expect(sent).toHaveBeenCalledExactlyOnceWith({ scope: 'c2c', targetId: 'peer' }, '这是查询结果。');
   } finally {
     gateway.dispose();
+    vi.restoreAllMocks();
+  }
+});
+
+function queuedConversation() {
+  const values = StateSchema.parse({ config: { appId: 'test-account', streaming: false } });
+  const storage = { get: async () => ({ revision: 0, values: structuredClone(values) }), patch: vi.fn() } as unknown as PluginStorage;
+  const store = new StateStore(storage);
+  const context = { signal: new AbortController().signal, installation: { id: 'installation', generation: 2 }, omp: {} } as unknown as PluginServiceContext;
+  const gateway = new Gateway(context, store, new Pairing(store), values.config, 'fixture-only-secret', { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }, vi.fn());
+  const started = [Promise.withResolvers<string>(), Promise.withResolvers<string>()];
+  let inputIndex = 0;
+  const agent = { send: vi.fn(async (_text: string, options: { messageId: string }) => { started[inputIndex++]!.resolve(options.messageId); }), stop: vi.fn() };
+  const route = { peer: { appId: 'test-account', scope: 'group' as const, openid: 'peer', agentId: 'agent' }, agent, enabledDelivery: false, target: undefined, buffer: null, files: new Map(), textRows: new Map(), toolRevisions: new Map(), pending: new Map(), epoch: 'before-resume', lastSeq: 74 };
+  const internal = gateway as unknown as { routes: Map<string, typeof route>; getOrCreate: () => Promise<typeof route>; message: (context: MiddlewareContext) => Promise<void>; event: (route: typeof route, stream: OmpAgentStream) => Promise<void>; sender: { sendMarkdown: (target: unknown, text: string) => Promise<void> } };
+  internal.routes.set(peerKey('test-account', 'group', 'peer'), route);
+  vi.spyOn(internal, 'getOrCreate').mockResolvedValue(route);
+  const delivered = vi.spyOn(internal.sender, 'sendMarkdown').mockResolvedValue();
+  const event = (event: OmpAgentStream['event'], seq?: number, epoch?: string) => internal.event(route, { event, seq, epoch } as OmpAgentStream);
+  const message = (text: string) => internal.message({ replyTarget: { scope: 'group', targetId: 'peer', msgId: text }, message: { kind: 'group', content: text, senderId: text }, state: {} } as unknown as MiddlewareContext);
+  const begin = async (id: string, turnId: string, seq: number, epoch?: string) => {
+    await event({ type: 'turn_started', turnId });
+    await event({ type: 'timeline', turnId, item: { type: 'user_message', text: id, clientMessageId: id } }, seq, epoch);
+  };
+  const finish = async (turnId: string, text: string, seq: number, epoch?: string) => {
+    await event({ type: 'timeline', turnId, item: { type: 'assistant_message', text } }, seq, epoch);
+    await event({ type: 'turn_completed', turnId });
+  };
+  return { gateway, agent, started, event, message, begin, finish, delivered };
+}
+
+it.each(['after-resume', undefined])('renumbered input releases the group queue without waiting for timeout (epoch=%s)', async epoch => {
+  const f = queuedConversation();
+  const first = f.message('Iris').then(() => 'completed', error => error);
+  const second = f.message('Cassandra').then(() => 'completed', error => error);
+  try {
+    const firstId = await f.started[0]!.promise;
+    await f.begin(firstId, 'turn-1', 3, epoch);
+    await f.finish('turn-1', 'first answer', 4, epoch);
+    await nextImmediate();
+    expect(f.agent.send).toHaveBeenCalledTimes(2);
+    expect(await first).toBe('completed');
+    const secondId = await f.started[1]!.promise;
+    await f.begin(secondId, 'turn-2', 5, epoch);
+    await f.finish('turn-2', 'second answer', 6, epoch);
+    expect(await second).toBe('completed');
+    expect(f.delivered.mock.calls).toEqual([
+      [{ scope: 'group', targetId: 'peer', msgId: 'Iris' }, 'first answer'],
+      [{ scope: 'group', targetId: 'peer', msgId: 'Cassandra' }, 'second answer'],
+    ]);
+  } finally {
+    f.gateway.dispose();
+    await Promise.allSettled([first, second]);
+    vi.restoreAllMocks();
+  }
+});
+
+it('a rejected QQ reply fails its input and lets the next group member proceed', async () => {
+  const f = queuedConversation();
+  const failure = new Error('QQ API: proactive messages are not permitted');
+  f.delivered.mockRejectedValueOnce(failure);
+  const first = f.message('Iris').then(() => 'completed', error => error);
+  const second = f.message('Cassandra').then(() => 'completed', error => error);
+  try {
+    await f.begin(await f.started[0]!.promise, 'turn-1', 75, 'before-resume');
+    await expect(f.finish('turn-1', 'first answer', 76, 'before-resume')).rejects.toBe(failure);
+    expect(await first).toBe(failure);
+    await nextImmediate();
+    expect(f.agent.send).toHaveBeenCalledTimes(2);
+    await f.begin(await f.started[1]!.promise, 'turn-2', 77, 'before-resume');
+    await f.finish('turn-2', 'second answer', 78, 'before-resume');
+    expect(await second).toBe('completed');
+    expect(f.delivered).toHaveBeenLastCalledWith({ scope: 'group', targetId: 'peer', msgId: 'Cassandra' }, 'second answer');
+  } finally {
+    f.gateway.dispose();
+    await Promise.allSettled([first, second]);
     vi.restoreAllMocks();
   }
 });
