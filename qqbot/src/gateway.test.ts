@@ -107,12 +107,12 @@ function queuedConversation() {
   let inputIndex = 0;
   const agent = { send: vi.fn(async (_text: string, options: { messageId: string }) => { started[inputIndex++]!.resolve(options.messageId); }), stop: vi.fn() };
   const route = { peer: { appId: 'test-account', scope: 'group' as const, openid: 'peer', agentId: 'agent' }, agent, enabledDelivery: false, target: undefined, buffer: null, files: new Map(), textRows: new Map(), toolRevisions: new Map(), pending: new Map(), epoch: 'before-resume', lastSeq: 74 };
-  const internal = gateway as unknown as { routes: Map<string, typeof route>; getOrCreate: () => Promise<typeof route>; message: (context: MiddlewareContext) => Promise<void>; event: (route: typeof route, stream: OmpAgentStream) => Promise<void>; sender: { sendMarkdown: (target: unknown, text: string) => Promise<void> } };
+  const internal = gateway as unknown as { bot: QQBot; routes: Map<string, typeof route>; getOrCreate: () => Promise<typeof route>; message: (context: MiddlewareContext) => Promise<void>; event: (route: typeof route, stream: OmpAgentStream) => Promise<void>; sender: { sendMarkdown: (target: unknown, text: string) => Promise<void> } };
   internal.routes.set(peerKey('test-account', 'group', 'peer'), route);
   vi.spyOn(internal, 'getOrCreate').mockResolvedValue(route);
   const delivered = vi.spyOn(internal.sender, 'sendMarkdown').mockResolvedValue();
   const event = (event: OmpAgentStream['event'], seq?: number, epoch?: string) => internal.event(route, { event, seq, epoch } as OmpAgentStream);
-  const message = (text: string) => internal.message({ replyTarget: { scope: 'group', targetId: 'peer', msgId: text }, message: { kind: 'group', content: text, senderId: text }, state: {} } as unknown as MiddlewareContext);
+  const message = (text: string) => internal.message({ bot: internal.bot, replyTarget: { scope: 'group', targetId: 'peer', msgId: text }, message: { kind: 'group', groupOpenid: 'peer', rawEventType: 'GROUP_AT_MESSAGE_CREATE', messageId: text, timestamp: '2026-11-13T00:00:00Z', content: text, senderId: text, raw: { author: { member_openid: text }, group_openid: 'peer' } }, state: {} } as unknown as MiddlewareContext);
   const begin = async (id: string, turnId: string, seq: number, epoch?: string) => {
     await event({ type: 'turn_started', turnId });
     await event({ type: 'timeline', turnId, item: { type: 'user_message', text: id, clientMessageId: id } }, seq, epoch);

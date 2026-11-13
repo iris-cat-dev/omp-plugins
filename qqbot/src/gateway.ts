@@ -1,4 +1,4 @@
-import { QQBot, MemoryHistoryStore, errorHandler, messageFilter, mentionGate, contentSanitizer, rateLimiter, quoteRef, historyBuffer, envelopeFormatter, typingIndicator, type MiddlewareContext, type ResolvedQuote, type StreamSession } from '@tencent-connect/qqbot-nodejs';
+import { QQBot, MemoryHistoryStore, errorHandler, messageFilter, mentionGate, contentSanitizer, rateLimiter, historyBuffer, envelopeFormatter, typingIndicator, type MiddlewareContext, type ResolvedQuote, type StreamSession } from '@tencent-connect/qqbot-nodejs';
 import { RECONNECT_DELAYS, type RequestOptions } from '@tencent-connect/qqbot-nodejs/protocol';
 import type { PluginServiceContext } from '@omp-desktop/plugin/server';
 import type { OmpAgent, OmpAgentHandle, OmpAgentStream, OmpAgentObservation } from '@omp-desktop/client';
@@ -20,8 +20,23 @@ import type { ReplyTarget, Logger } from './types.ts';
 import { redactQqMessage } from './privacy.ts';
 import { SandboxFiles, sandboxRelativePath } from './sandbox-files.ts';
 import { z } from 'zod';
+import { GroupMembers } from './group-members.ts';
+import { GroupMemberQuerySchema, type GroupMemberQuery } from './shared/group-members.ts';
+import { collectGroupMembers, scopedQuoteRef, stripSelfMentions, formatGroupEnvelope } from './group-context.ts';
 const PresentedFilesSchema=z.array(z.object({path:z.string().min(1),mimeType:z.string().optional(),name:z.string().optional()}));
 const GeneratedImagesSchema=z.array(z.object({path:z.string().refine(path=>{try{return sandboxRelativePath(path)===path&&/^\.qqbot-media\/generated\/[^/]+$/.test(path);}catch{return false;}}),mimeType:z.enum(['image/png','image/jpeg','image/webp','image/gif']),name:z.string().optional()}));
+function memberQuery(argument:string):GroupMemberQuery {
+  const query:GroupMemberQuery={};const nickname:string[]=[];const tokens=argument.trim()?argument.trim().split(/\s+/):[];
+  for(let index=0;index<tokens.length;index++){
+    const token=tokens[index]!;
+    if(token==='--refresh')query.refresh=true;
+    else if(token==='--id'){if(query.member_openid!==undefined||!tokens[index+1])throw new Error('用法：/members [昵称] [--id 完整OpenID] [--refresh]');query.member_openid=tokens[++index]!;}
+    else if(token.startsWith('--'))throw new Error('用法：/members [昵称] [--id 完整OpenID] [--refresh]');
+    else nickname.push(token);
+  }
+  if(nickname.length)query.nickname=nickname.join(' ');
+  return GroupMemberQuerySchema.parse(query);
+}
 interface PendingInput {target:ReplyTarget;done:()=>void;fail:(error:unknown)=>void;owned:boolean;turnId?:string}
 interface Route { peer: Peer; agent: OmpAgentHandle; unsubscribe: (() => void) | null; buffer: OutboundBuffer | null; turnId?: string; canceledTurnId?: string; target?: ReplyTarget; textRows: Map<number,string>; files:Map<string,{name:string;mimeType?:string;generatedTurnId?:string}>; toolRevisions:Map<string,string>; chain: Promise<void>; pending: Map<string,PendingInput>; localTarget?: ReplyTarget; epoch?: string; lastSeq: number; enabledDelivery: boolean }
 class SandboxConfirmationError extends Error {}
@@ -89,6 +104,7 @@ export class Gateway {
   private sender: QQBotSender;
   private cards: Cards;
   private history = new MemoryHistoryStore();
+  private members: GroupMembers;
   private streams = new Set<StreamSession>();
   private invitationReplies = new Set<string>();
   private mediaTimer: ReturnType<typeof setInterval> | undefined;
@@ -102,6 +118,7 @@ export class Gateway {
     this.privateValues.add(appSecret);
     this.logger={debug:message=>logger.debug(this.redact(message)),info:message=>logger.info(this.redact(message)),warn:message=>logger.warn(this.redact(message)),error:message=>logger.error(this.redact(message))};
     this.bot = new QQBot({appId:config.appId,appSecret,transport:'websocket',markdownSupport:true,baseUrl:process.env.QQBOT_BASE_URL || 'https://api.bot.qq.com',tokenBaseUrl:process.env.QQBOT_TOKEN_BASE_URL || 'https://bots.qq.com',userAgent:'omp-desktop-plugin-qqbot/1.0.0',logger:this.logger});
+    this.members = new GroupMembers(store, config.appId, this.bot.api, this.signal);
     this.queue = new PeerQueue(config.maxQueue);
     const current = () => {
       const route = this.deliveryRoute.getStore();
@@ -175,11 +192,12 @@ export class Gateway {
     const mention=mentionGate({requireMentionInGroup:this.config.requireMention});const limit=rateLimiter();
     this.bot.use(async(context,next)=>{if(this.signal.aborted){context.stop('expired-generation');return;}const raw=context.message.content.replaceAll(`<@!${this.config.appId}>`,'').replaceAll(`<@${this.config.appId}>`,'').trim();if(!this.pairing.active(raw)){await next();return;}await mention(context,async()=>limit(context,async()=>{const claimed=await this.pairing.claim(raw,context.replyTarget.scope,context.replyTarget.targetId,context.message.senderId,context.message.senderName??'');if(!this.signal.aborted)await this.invitationReply(context,claimed);context.stop('pair-claim');}));});
     this.bot.use(async(context,next)=>{if(await this.authorized({scope:context.replyTarget.scope,openid:context.replyTarget.targetId},context.message.senderId))await next();else context.stop('access-denied');});
+    this.bot.use(collectGroupMembers(this.members));this.bot.use(scopedQuoteRef());
     this.bot.use(historyBuffer({store:this.history,limit:this.config.historyLimit,recordOnSkip:true,groupKey:context=>context.message.kind==='group'?JSON.stringify([this.config.appId,context.message.groupOpenid]):undefined}));
-    this.bot.use(mention);this.bot.use(contentSanitizer({parseFaceTags:true}));this.bot.use(limit);
+    this.bot.use(mention);this.bot.use(contentSanitizer({parseFaceTags:true,stripBotMention:false,transform:stripSelfMentions}));this.bot.use(limit);
     this.bot.use(async(context,next)=>{const text=context.message.content.trim();if(!text.startsWith('/')){await next();return;}if(!await this.authorized({scope:context.replyTarget.scope,openid:context.replyTarget.targetId},context.message.senderId,true)){await this.sender.sendMarkdown(context.replyTarget,'该发送者没有斜杠命令权限。');context.stop('command-denied');return;}await this.command(context,text);context.stop('plugin-command');});
     this.bot.use(async(context,next)=>{const route=this.routes.get(peerKey(this.config.appId,context.replyTarget.scope,context.replyTarget.targetId));if(route&&await this.cards.text(route.peer,context.message.senderId,context.message.content)){context.stop('question-answer');return;}await next();});
-    this.bot.use(typingIndicator());this.bot.use(quoteRef({maxSize:500,preferMsgElements:true}));this.bot.use(envelopeFormatter({historyLimit:this.config.historyLimit,includeQuote:true,includeSender:true}));
+    this.bot.use(typingIndicator());this.bot.use(envelopeFormatter({historyLimit:this.config.historyLimit,includeQuote:true,includeSender:true}));
   }
   private getOrCreate(scope:'c2c'|'group',openid:string,reset=false):Promise<Route>{
     const key=peerKey(this.config.appId,scope,openid);const current=this.creating.get(key);
@@ -271,8 +289,10 @@ export class Gateway {
         if(this.config.vision.enabled&&['image/png','image/jpeg','image/webp','image/gif'].includes(file.mimeType)){if(file.size>this.config.vision.maxBytes)throw new Error('图片超过原生视觉输入上限');images.push({data:(await this.files.read(file.relativePath,this.config.vision.maxBytes)).toString('base64'),mimeType:file.mimeType});}
       }
       if(!await this.currentConfig()||this.routes.get(key)!==route)throw new Error('QQ 沙箱路由已替换');
+      const envelope=scope==='group'?formatGroupEnvelope(context,await this.members.list(openid),this.config.historyLimit):String(context.state.envelope??context.message.content);
       if(!await this.authorized(route.peer,context.message.senderId))throw new Error('QQ 发送者访问授权已撤销');
-      const id=`qqbot:${this.ctx.installation.id}:${randomUUID()}`;const text=String(context.state.envelope??context.message.content)+((context.message.attachments??[]).map(a=>a.asr_refer_text?`\n语音转录：${a.asr_refer_text}`:'').join(''));
+      if(this.signal.aborted||this.routes.get(key)!==route)throw new Error('QQ 沙箱路由已替换');
+      const id=`qqbot:${this.ctx.installation.id}:${randomUUID()}`;const text=envelope+((context.message.attachments??[]).map(a=>a.asr_refer_text?`\n语音转录：${a.asr_refer_text}`:'').join(''));
       let done!:()=>void;let fail!:(error:unknown)=>void;const completion=new Promise<void>((resolve,reject)=>{done=resolve;fail=reject;});const pending:PendingInput={target:{scope,targetId:openid,msgId:context.replyTarget.msgId},done,fail,owned:false};route.pending.set(id,pending);route.localTarget=context.replyTarget;
       const timer=setTimeout(()=>{if(this.signal.aborted)return;if(pending.owned&&(!pending.turnId||pending.turnId===route.turnId))void route.agent.stop().catch(error=>this.report(error));fail(new Error('QQ 回合处理超时，当前 QQ 路由已取消'));},this.config.processingTimeoutMs);
       const abort=()=>fail(new Error('QQ 路由取消，Desktop agent 保留运行状态'));this.signal.addEventListener('abort',abort,{once:true});
@@ -337,16 +357,33 @@ export class Gateway {
   }
   private async command(context:MiddlewareContext,text:string){
     const match=/^\/([^\s]+)\s*(.*)$/s.exec(text)!;const command=match[1]!.toLowerCase();const arg=match[2]!.trim();const scope=context.replyTarget.scope;const openid=context.replyTarget.targetId;const key=peerKey(this.config.appId,scope,openid);let reply:string;
-    if(command==='bot-help'||command==='help')reply='/new /reset /stop /compact /model [id] /preset [name|reset] /status /whoami /bot-help';
+    if(command==='bot-help'||command==='help')reply='/new /reset /stop /compact /model [id] /preset [name|reset] /status /whoami /members [昵称|--id OpenID] [--refresh] /bot-help';
     else if(command==='preset'){const state=(await this.store.read()).values;if(!arg)reply=`下一次新对话：${state.presetSelections[key]??this.config.defaultPreset}\n${this.config.presets.map(p=>p.name).join('\n')}`;else{if(arg!=='reset'&&arg!=='default'&&!this.config.presets.some(p=>p.name===arg))throw new Error(`未知 preset：${arg}`);await this.store.mutate(s=>{if(this.signal.aborted||s.config.appId!==this.config.appId||s.config.sandboxPath!==this.config.sandboxPath)throw new Error('QQ 配置已变化');if(arg==='reset'||arg==='default')delete s.presetSelections[key];else s.presetSelections[key]=arg;});reply='Preset 已保存，仅下一次 /new 或 /reset 生效。';}}
     else if(command==='new'||command==='reset'){await this.queue.enqueue(key,async()=>{await this.getOrCreate(scope,openid,true);});reply='已创建新的 Desktop agent，旧对话历史保持可恢复。';}
     else if(command==='whoami')reply=`scope=${scope}\npeer=${openid}\nsender=${context.message.senderId}`;
+    else if(command==='members'){if(scope!=='group')throw new Error('/members 仅支持当前 QQ 群会话');reply=JSON.stringify(await this.queryMembers(openid,memberQuery(arg)),null,2);}
     else if(command==='stop'){const route=this.routes.get(key);if(route){route.canceledTurnId=route.turnId;await route.agent.stop();}reply=route?'已请求停止当前 agent。':'当前没有对话。';}
     else if(command==='compact'){const route=await this.getOrCreate(scope,openid);await this.activeRoute(route);await route.agent.compact();reply='已请求原生对话压缩。';}
     else if(command==='model'){const route=await this.getOrCreate(scope,openid);if(!arg){const snapshot=await route.agent.refresh();if(!snapshot)throw new Error('Desktop agent 不存在');await this.activeRoute(route);const models=await this.ctx.omp.providers.listModels(snapshot.agent.provider,{cwd:route.peer.cwd});reply=JSON.stringify(models,null,2);}else{const model=arg==='default'?null:arg;await this.activeRoute(route);await route.agent.setModel(model);await this.store.mutate(s=>{if(!this.matchesConfig(s.config)||s.peers[key]?.agentId!==route.peer.agentId)throw new Error('QQ 模型选择结果已失效');s.modelSelections[key]=model;});reply='模型已由 Desktop 更新并保存到此 QQ peer 偏好。';}}
     else if(command==='status'){const route=this.routes.get(key);const current=route?await route.agent.refresh():null;reply=current?`${current.agent.status}\nagent=${current.agent.id}\nworkspace=${route!.peer.workspaceId}\nmodel=${current.agent.model??'默认'}`:'当前没有对话。';}
     else reply='未知 QQ 插件命令。发送 /bot-help；不会转发给宿主插件管理器。';
     for(const chunk of chunkMarkdownText(reply,this.config.textChunkLimit))await this.sender.sendMarkdown(context.replyTarget,chunk);
+  }
+  private async queryMembers(groupOpenid:string,input:GroupMemberQuery,signal?:AbortSignal){
+    const peer={scope:'group' as const,openid:groupOpenid};
+    if(!await this.authorized(peer,groupOpenid))throw new Error('当前群已不允许机器人访问');
+    const result=await this.members.query(groupOpenid,input,signal);
+    if(!await this.authorized(peer,groupOpenid))throw new Error('当前群已不允许机器人访问');
+    return result;
+  }
+  async queryGroupMembers(agentId:string,input:GroupMemberQuery,signal?:AbortSignal){
+    const state=(await this.store.read()).values;
+    const peer=Object.values(state.peers).find(peer=>peer.appId===this.config.appId&&peer.agentId===agentId);
+    if(!peer||peer.scope!=='group'||peer.hostId!==this.ctx.omp.hostId)throw new Error('群成员查询仅支持当前 QQ 群会话');
+    const result=await this.queryMembers(peer.openid,input,signal);
+    const saved=(await this.store.read()).values.peers[peerKey(peer.appId,peer.scope,peer.openid)];
+    if(saved?.agentId!==agentId||saved.hostId!==this.ctx.omp.hostId||saved.scope!=='group'||saved.openid!==peer.openid||saved.appId!==this.config.appId)throw new Error('当前 QQ 群会话已被替换');
+    return result;
   }
   async sendFile(_agentId:string,_path:string,_type:'image'|'video'|'voice'|'file',_target?:{scope:'c2c'|'group';openid:string}){
     throw new Error('QQ 沙箱不允许宿主 qqbot_send_file 工具；仅可显式开启沙箱文件自动投递');

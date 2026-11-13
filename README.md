@@ -47,6 +47,28 @@ QQ conversations share a serial queue per peer. Timeline sequence numbers belong
 
 The persisted `lastDeliveredSequence` is a processed timeline watermark, not a Tencent delivery receipt. Failed replies are not automatically retried.
 
+## QQ group member identities
+
+In a QQ group, mention the bot and ask for a member's OpenID. Every model input includes the current group, complete sender and mention-target identities, known quoted-author identities, and the persisted member directory. Duplicate names remain separate identities; OpenIDs are not QQ numbers, and group/C2C identities are not merged.
+
+For an explicit read-only lookup, mention the bot and send:
+
+```text
+/members 小明
+/members --id COMPLETE_MEMBER_OPENID
+/members --refresh
+/members 小明 --refresh
+/members --id COMPLETE_MEMBER_OPENID --refresh
+```
+
+The command always uses the current group and respects the existing slash-command access policy. Nicknames match case-insensitive substrings and return every match. `--refresh` reads every official roster page; with `--id`, it refreshes only that member's details. List requests are spaced at least one second apart per account; detail requests at least two seconds apart.
+
+Results contain `group_openid`, `members`, `source`, and `complete`. The learned directory always returns `source:directory, complete:false` and may include former members. Only a successful refresh of every roster page returns `source:platform, complete:true`; single-member details remain incomplete. The official [roster](https://bot.q.qq.com/wiki/develop/api-v2/autogen/api/v2_groups_group_openid_members.get.html) and [detail](https://bot.q.qq.com/wiki/develop/api-v2/autogen/api/v2_groups_group_openid_members_member_openid.get.html) APIs require QQ platform allowlist permission. Error `11253` returns known identities with an explicit `platform_error`; other errors propagate without caching a partial roster.
+
+The directory is stored in host-scoped plugin settings as `groupMembers`, keyed by account and group. Only admitted group messages are observed, including non-mention messages QQ delivers. Learning identities never grants access or command permissions. Quote caches are conversation-scoped; unavailable authors are labeled explicitly.
+
+Trusted host clients can invoke `qqbot.group-members` with `{agentId, nickname?, member_openid?, refresh?}`. The persisted agent mapping selects the current QQ group; private chats, foreign hosts, revoked groups, and replaced mappings are rejected. QQ agents retain their mandatory sandbox: this RPC is not exposed as a model-accessible host tool or MCP connection.
+
 ## License
 
 AGPL-3.0-or-later, except components carrying their own license; `qqbot/LICENSE` retains its MIT license.

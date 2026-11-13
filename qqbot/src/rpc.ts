@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { defineRpc } from '@omp-desktop/plugin';
 import { ConfigSchema, AccessSchema, PeerSchema, OpenId } from './state.ts';
+import { GroupMemberQuerySchema, GroupMemberResultSchema } from './shared/group-members.ts';
 const Purpose = z.enum(['owner', 'allow-c2c', 'allow-group']);
 export const StatusSchema = z.object({ generation: z.number(), connection: z.enum(['waiting', 'connecting', 'ready', 'failed']), reason: z.string().nullable(), appId: z.string(), secretConfigured: z.boolean(), binding: z.object({ phase: z.enum(['idle', 'starting', 'waiting', 'saving', 'failed']), url: z.string().optional(), qrSvg: z.string().optional(), reason: z.string().optional(), issuedAt: z.number().optional() }), config: ConfigSchema, access: AccessSchema, peers: z.array(PeerSchema), challenges: z.array(z.object({ code: z.string(), purpose: Purpose, expiresAt: z.number(), createdAt: z.number(), claims: z.array(z.unknown()) })), importReport: z.array(z.string()) });
 export const status = defineRpc({ name: 'qqbot.status', input: z.object({}), output: StatusSchema });
@@ -18,3 +19,4 @@ export const action = defineRpc({ name: 'qqbot.action', input: z.discriminatedUn
  z.object({ kind: z.literal('import'), source: z.literal('dsh-qqbot'), document: z.string().max(1048576), accessRevision: z.number(), credentialKey:z.string().regex(/^credential-draft:[0-9a-f-]+$/).optional() }),
 ]), output: StatusSchema });
 export const sendFile = defineRpc({ name: 'qqbot.send-file', input: z.object({ agentId: z.string(), path: z.string().min(1), type: z.enum(['image', 'video', 'voice', 'file']).default('file'), target: z.object({ scope: z.enum(['c2c','group']), openid: OpenId }).optional() }), output: z.object({ sent: z.literal(true) }) });
+export const groupMembers = defineRpc({ name: 'qqbot.group-members', input: GroupMemberQuerySchema.extend({ agentId: z.string().min(1) }), output: GroupMemberResultSchema });

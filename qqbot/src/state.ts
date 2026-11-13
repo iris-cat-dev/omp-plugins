@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { PluginStorage, PluginStorageSnapshot } from '@omp-desktop/plugin';
 import { AgentSandboxSchema } from '@omp-desktop/protocol/messages';
 import { normalizePairCode, parseWhitelistEntries, type PairPurpose, type ManualPairResult } from './shared/pairing-protocol.ts';
+import { GroupDirectorySchema } from './shared/group-members.ts';
 
 export const OpenId = z.string().trim().min(1).max(1024).regex(/^[A-Za-z0-9_-]+$/);
 export const Scope = z.enum(['c2c', 'group']);
@@ -65,7 +66,7 @@ export const StateSchema = z.preprocess(value => {
     ...(config ? { config: { ...config, ...(Array.isArray(config.presets) ? { presets: config.presets.map(migrateStoredPreset) } : {}) } } : {}),
     ...(peers ? { peers: Object.fromEntries(Object.entries(peers).map(([key, peer]) => [key, { ...peer, template: migrateStoredPreset(peer.template) }])) } : {}),
   };
-}, z.object({ schemaVersion: z.literal(1).default(1), config: ConfigSchema.default(() => ConfigSchema.parse({})), credentialVersions:z.record(z.string(),z.number().int().nonnegative()).default({}), access: AccessSchema.default(() => AccessSchema.parse({})), accountAccess: z.record(z.string(), AccessSchema).default({}), peers: z.record(z.string(), PeerSchema).default({}), presetSelections: z.record(z.string(), z.string()).default({}), modelSelections: z.record(z.string(), z.string().nullable()).default({}), importReport: z.array(z.string()).default([]) }));
+}, z.object({ schemaVersion: z.literal(1).default(1), config: ConfigSchema.default(() => ConfigSchema.parse({})), credentialVersions:z.record(z.string(),z.number().int().nonnegative()).default({}), access: AccessSchema.default(() => AccessSchema.parse({})), accountAccess: z.record(z.string(), AccessSchema).default({}), groupMembers: GroupDirectorySchema.default({}), peers: z.record(z.string(), PeerSchema).default({}), presetSelections: z.record(z.string(), z.string()).default({}), modelSelections: z.record(z.string(), z.string().nullable()).default({}), importReport: z.array(z.string()).default([]) }));
 export type Config = z.infer<typeof ConfigSchema>;
 export type State = z.infer<typeof StateSchema>;
 export type Peer = z.infer<typeof PeerSchema>;
