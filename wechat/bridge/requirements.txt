@@ -1,0 +1,4 @@
+Pillow==13.0.0
+psutil==7.2.2
+cryptography==50.0.1
+zstandard==0.25.0
