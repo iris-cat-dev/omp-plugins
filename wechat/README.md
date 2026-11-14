@@ -6,6 +6,8 @@ Windows x64 上的 OMP Desktop 微信连接插件，包含只读消息接收、�
 
 需要 OMP Desktop 0.7.0 插件宿主、支持 `node:sqlite` 的 Node、Python 3.12 x64 和已登录的 Windows 微信。仅支持 `native/engine/profiles.json` 中列出的微信程序文件指纹；版本号相同但文件不匹配时也会拒绝连接。
 
+接收端会读取选定进程的内存和数据库；发送端会将随附 DLL 加载到该微信进程。微信更新可能导致指纹不匹配，届时插件会拒绝连接。
+
 在本目录构建插件并准备 Python 环境：
 
 ```powershell
