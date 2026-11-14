@@ -6,18 +6,22 @@ Optional folder-installed plugins and source examples for [OMP Desktop](https://
 - `wallpaper/`: wallpaper selection and rendering.
 - `desktop-pet/`: desktop pet, authoring workflow, and bundled Iris assets.
 - `qqbot/`: QQ gateway, account UI, and agent conversations.
+- `schedules/`: scheduled agents, existing-agent heartbeats, run history, and multi-host management.
 - `examples/`: Catppuccin, Linear attachments, and the local counter plugin.
 
 ## Build in a Desktop checkout
 
-Desktop pins this repository as its root `plugins/` Git submodule and includes the four plugin packages in its npm workspaces. The shared SDK, compiler, and host implementation remain in Desktop's `packages/plugin`; plugin builds use that checkout rather than a second SDK copy.
+Desktop pins this repository as its root `plugins/` Git submodule and includes the five plugin packages in its npm workspaces. The shared SDK, compiler, and host implementation remain in Desktop's `packages/plugin`; plugin builds use that checkout rather than a second SDK copy.
 
 From the Desktop checkout root:
 
 ```sh
 git submodule update --init --recursive
 npm install
-npm run build:desktop-plugins
+npm run build:plugin
+node scripts/build-desktop-plugins.mjs plugins/agent-speed plugins/wallpaper plugins/desktop-pet
+node plugins/qqbot/build.mjs
+node plugins/schedules/build.mjs
 npx tsc --noEmit -p packages/plugin/tsconfig.examples.json
 ```
 

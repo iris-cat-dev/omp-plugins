@@ -1,0 +1,12 @@
+{
+  "compilerOptions": {
+    "target": "ES2022", "lib": ["ES2024", "DOM"], "module": "ESNext",
+    "moduleResolution": "Bundler", "jsx": "react-jsx", "strict": true,
+    "skipLibCheck": true, "isolatedModules": true, "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true, "allowImportingTsExtensions": true,
+    "declaration": true, "declarationMap": true, "emitDeclarationOnly": true,
+    "noEmitOnError": true, "rootDir": ".", "outDir": "dist/types", "types": ["node"]
+  },
+  "include": ["*.ts", "*.tsx", "ui/**/*.ts", "ui/**/*.tsx"],
+  "exclude": ["node_modules", "dist", "**/*.test.ts", "**/*.test.tsx", "**/*.test-support.ts"]
+}

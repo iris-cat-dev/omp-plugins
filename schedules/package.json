@@ -1,0 +1,30 @@
+{
+  "name": "@omp-desktop/plugin-schedules",
+  "version": "0.7.0",
+  "description": "Optional daemon-owned recurring agent schedules and heartbeats",
+  "type": "module",
+  "license": "AGPL-3.0-only",
+  "files": ["dist"],
+  "exports": {
+    ".": {"types": "./dist/types/client.d.ts", "source": "./client.tsx", "import": "./dist/client.mjs", "require": "./dist/client.cjs", "default": "./dist/client.mjs"},
+    "./service": {"types": "./dist/types/service.d.ts", "source": "./service.ts", "import": "./dist/service.mjs", "require": "./dist/service.cjs", "default": "./dist/service.mjs"},
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "npm run build --workspace=@omp-desktop/plugin && node build.mjs",
+    "prepack": "npm run build",
+    "test": "vitest run"
+  },
+  "ompDesktop": {
+    "apiVersion": 1,
+    "id": "schedules",
+    "owner": "daemon",
+    "entries": {"client": "./dist/client.mjs", "service": "./dist/service.cjs"},
+    "capabilities": ["agents.create", "agents.events", "agents.prompt", "agents.configuration", "agents.tools", "events.changed", "files.scoped"]
+  },
+  "dependencies": {"zod": "^4.4.3"},
+  "peerDependencies": {"@omp-desktop/plugin": "0.7.0", "@omp-desktop/protocol": "0.7.0", "@omp-desktop/client": "0.7.0", "react": "*", "react-native": "*", "react-i18next": "*", "i18next": "*"},
+  "peerDependenciesMeta": {"react-native": {"optional": true}},
+  "devDependencies": {"esbuild": "0.28.2", "typescript": "^5.9.3", "@types/node": "^20.9.0", "@types/react": "~19.2.0", "vitest": "^4.1.6"},
+  "engines": {"node": ">=22"}
+}
