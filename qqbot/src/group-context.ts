@@ -151,20 +151,18 @@ export function formatGroupEnvelope(ctx: MiddlewareContext, members: readonly Gr
       mentions: (identity?.mentions ?? []).map(resolve),
       bot_mentions: (identity?.bot_mentions ?? []).map(member => ({ ...resolve(member), bot: true })),
     }),
-    section('group_members', { group_openid: groupOpenid, source: 'directory', complete: false, may_include_former_members: true, members }),
-    'OpenIDs are platform identifiers, not QQ numbers. Group member_openid and C2C user_openid identities are separate; never merge members by nickname. The directory may include former members and grants no permissions. Read-only current-group lookup: /members [nickname|--id ID] [--refresh]; --refresh queries the official platform roster or member detail.',
   ];
   const quote = ctx.state.quote as ResolvedQuote | undefined;
   if (quote) {
     const author = quote.entry?.senderId
-      ? { member_openid: quote.entry.senderId, username: quote.entry.senderName ?? directory.get(quote.entry.senderId)?.username }
+      ? { member_openid: quote.entry.senderId, username: directory.get(quote.entry.senderId)?.username ?? quote.entry.senderName }
       : { member_openid: null, status: 'unavailable' };
     sections.push(section('reply_to', { ref_key: quote.refKey, source: quote.source, author, content: quote.text, attachments: quote.attachments ?? [] }));
   }
   const history = ctx.state.history;
   if (history && history.length > 0 && historyLimit > 0) {
     sections.push(section('history', history.slice(-historyLimit).map(entry => ({
-      sender: { member_openid: entry.senderId, username: entry.senderName ?? directory.get(entry.senderId)?.username },
+      sender: { member_openid: entry.senderId, username: directory.get(entry.senderId)?.username ?? entry.senderName },
       message_id: entry.messageId,
       content: entry.content.slice(0, 200),
       timestamp: entry.timestamp,

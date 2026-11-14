@@ -12,6 +12,7 @@ import { Pairing, StateSchema, StateStore, PeerSchema, peerKey, type Peer } from
 import { SandboxFiles } from './sandbox-files.ts';
 import type { ReplyTarget } from './types.ts';
 import { cleanMedia } from './media.ts';
+import type { AssistantReply } from './assistant-output.ts';
 
 const sdkRoot=process.env.OMP_DESKTOP_TEST_SDK_ROOT;
 if(!sdkRoot||!isAbsolute(sdkRoot)||!existsSync(join(sdkRoot,'package.json'))||!existsSync(join(sdkRoot,'dist','node','modules.json'))){
@@ -30,9 +31,9 @@ interface TestRoute {
   peer:Peer;agent:OmpAgentHandle;unsubscribe:null;buffer:null;
   turnId?:string;target?:ReplyTarget;localTarget?:ReplyTarget;enabledDelivery:boolean;
   textRows:Map<number,string>;files:Map<string,{name:string;mimeType?:string;generatedTurnId?:string}>;
-  toolRevisions:Map<string,string>;pending:Map<string,never>;chain:Promise<void>;lastSeq:number;
+  toolRevisions:Map<string,string>;pending:Map<string,{target:ReplyTarget;senderId:string;owned:boolean;turnId:string;done:()=>void;fail:(error:unknown)=>void;output?:AssistantReply;silent?:boolean}>;chain:Promise<void>;lastSeq:number;
 }
-async function fixture(enabled=true,scope:'c2c'|'group'='c2c') {
+async function fixture(enabled=true,scope:'c2c'|'group'='c2c',gameEnabled=false) {
   const directory=await mkdtemp(join(tmpdir(),'qq-generated-image-'));
   cleanups.push(()=>rm(directory,{recursive:true,force:true}));
   const root=await realpath(directory);
@@ -53,7 +54,7 @@ async function fixture(enabled=true,scope:'c2c'|'group'='c2c') {
   }} as PluginNativeApi;
   const files=await SandboxFiles.open(native,root,1024*1024);
   cleanups.push(()=>files.close());
-  let values=StateSchema.parse({config:{appId:'app',sandboxPath:root,sandboxCapabilities:{imageGeneration:enabled},media:{maxMB:1}}});
+  let values=StateSchema.parse({config:{appId:'app',sandboxPath:root,sandboxCapabilities:{imageGeneration:enabled},game:{enabled:gameEnabled},media:{maxMB:1}}});
   const store=new StateStore({get:async()=>({revision:0,values:structuredClone(values)}),patch:async(patch:unknown)=>{values=StateSchema.parse(patch);return{revision:0,values};}} as PluginStorage);
   const peer=PeerSchema.parse({appId:'app',scope,openid:'peer',hostId:'host',workspaceId:'workspace',agentId:'agent',cwd:root,sandbox:{root,...(enabled?{imageGeneration:true}:{})},preset:'default',template:values.config.presets[0],protocolPrompt:'QQ',lastDeliveredSequence:0});
   const target:ReplyTarget={scope,targetId:'peer',forceProactive:true};
@@ -82,6 +83,29 @@ it.each(['c2c','group'] as const)('sends real generated PNG buffers to the curre
   await f.event({type:'timeline',turnId:'turn-current',item:item()},1,3);
   expect(f.send).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({scope,targetId:'peer'}),{buffer:png});
   expect(f.markdown).not.toHaveBeenCalled();
+});
+it.each(['c2c','group'] as const)('game-enabled ordinary generated images preserve real native PNG and exact streamed text in %s',async scope=>{
+  const f=await fixture(true,scope,true);await f.start();
+  await f.event({type:'timeline',turnId:'turn-current',item:item()},1);
+  const fragments=['给你一','张图片。\n','这行换行是原文。'];
+  for(let index=0;index<fragments.length;index++)await f.event({type:'timeline',turnId:'turn-current',item:{type:'assistant_message',messageId:'image-reply',text:fragments[index]}},index+2);
+  expect(f.send).not.toHaveBeenCalled();expect(f.markdown).not.toHaveBeenCalled();
+  await f.complete();await f.complete();
+  expect(f.send).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({scope,targetId:'peer'}),{buffer:png});
+  expect(f.markdown).toHaveBeenCalledExactlyOnceWith(f.target,fragments.join(''));
+});
+it.each(['action','member_query','review','rift_review'] as const)('game-enabled %s output quarantines protocol text and generated native artifacts',async kind=>{
+  const f=await fixture(true,'group',true);await f.start();
+  const pending={target:f.target,senderId:'player',owned:true,turnId:'turn-current',done:vi.fn(),fail:vi.fn(),output:{text:'',messageCount:0}};
+  f.route.pending.set('input',pending);
+  await f.event({type:'timeline',turnId:'turn-current',item:item()},1);
+  expect(f.route.files.size).toBe(1);
+  const output=kind==='action'?'{"type":"game_action","command":"我的状态"}':kind==='member_query'?'{"type":"member_query","nickname":"同名"}':kind==='review'?JSON.stringify({scores:{experience:{value:0,quote:'',factIds:[]},problem:{value:1,quote:'慢'},reason:{value:1,quote:'慢'},change:{value:2,quote:'慢'}},feedback:'理解已通过。',followUp:null}):JSON.stringify({outcome:'success',reason:'处理了当前威胁。',narrative:'穿过了灵雾。'});
+  for(let offset=0;offset<output.length;offset+=7)await f.event({type:'timeline',turnId:'turn-current',item:{type:'assistant_message',messageId:'protocol-reply',text:output.slice(offset,offset+7)}},2+offset/7);
+  await f.complete();
+  expect(pending.output).toEqual({text:output,messageCount:1});
+  expect(pending.done).toHaveBeenCalledOnce();expect(pending.fail).not.toHaveBeenCalled();
+  expect(f.send).not.toHaveBeenCalled();expect(f.markdown).not.toHaveBeenCalled();expect(f.route.files.size).toBe(0);
 });
 
 it.each(['disabled','failed','empty','wrong-name','wrong-source','old-turn','missing-turn'] as const)('never sends generated images for %s results',async kind=>{

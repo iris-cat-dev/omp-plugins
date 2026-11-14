@@ -47,13 +47,31 @@ Distribute the plugin with its runtime dependencies, including `sharp` and its n
 
 ## QQ message completion
 
-QQ conversations share a serial queue per peer. Timeline sequence numbers belong to an epoch; idle resume or history reconstruction can renumber them. The gateway resets its sequence and revision caches when the epoch changes and recognizes submitted inputs by `clientMessageId`, including lower-sequence events. Completing a reply releases the next queued message immediately. Static delivery errors reject the input with the original error instead of silently reporting success; the generated reply remains in the Desktop conversation.
+QQ conversations share a serial queue per peer. Timeline sequence numbers belong to an epoch; idle resume or history reconstruction can renumber them. The gateway resets its sequence and revision caches when the epoch changes and recognizes submitted inputs by `clientMessageId`, including lower-sequence events. Completing and delivering a reply releases the next queued message unless native context maintenance is required. Static delivery errors reject the input with the original error instead of silently reporting success; the generated reply remains in the Desktop conversation.
 
 The persisted `lastDeliveredSequence` is a processed timeline watermark, not a Tencent delivery receipt. Failed replies are not automatically retried.
 
+Live assistant timeline rows are incremental fragments, not cumulative snapshots. New sequence numbers append to a stable `messageId`; a newer `contentVersion` at the same sequence replaces only that fragment. Group and game-enabled conversations assemble complete messages without inserting line breaks inside fragments, then validate internal protocols before QQ delivery. Executable protocols must come from one complete assistant message. Non-game C2C conversations retain native streaming.
+
+## QQ context maintenance
+
+The original QQ envelope, attachments, and vision input are sent once per admitted message. Member-query and multi-step game continuations carry only the latest host feedback and current player state. Identity and game rules live in the agent's versioned system prompt instead of being repeated in every input.
+
+After plugin reload, a safe legacy conversation stays attached while its current turn runs. Its next admitted QQ message waits for that turn, requests a silent bounded handoff, and creates a new agent with the current protocol and latest peer model/preset selections. The handoff retains confirmed memory, unfinished requests, complete relevant OpenIDs, and necessary attachment paths; it is consumed by the first accepted input. Old Desktop history and sandbox files remain available. Invalid handoffs leave the old conversation intact; `/reset` starts a new conversation without that handoff. Sandbox or capability changes still retire unsafe agents immediately.
+
+Configure automatic native compression in the existing JSON editor:
+
+```json
+{"autoCompactTokens":64000}
+```
+
+The default is 64,000 context tokens; `0` disables automatic maintenance. After a complete QQ message and its delivery, the gateway checks native usage and requests compression only when the threshold is reached and the peer has no active turn or review. It holds the peer queue until the observed manual compression completes and confirms a new compression result; command acknowledgement alone does not release it. `/compact` uses the same completion check and replies after completion. An acknowledgement failure or timeout pauses subsequent input until the outstanding operation completes or `/reset` replaces the peer; errors are reported in Desktop rather than silently treated as successful compression.
+
 ## QQ group member identities
 
-In a QQ group, mention the bot and ask for a member's OpenID. Every model input includes the current group, complete sender and mention-target identities, known quoted-author identities, and the persisted member directory. Duplicate names remain separate identities; OpenIDs are not QQ numbers, and group/C2C identities are not merged.
+In a QQ group, mention the bot and ask for a member's OpenID. The initial model input includes the current group, complete sender and mention-target identities, and known quoted/history-author identities; it does not include the full member directory. Duplicate names remain separate identities; OpenIDs are not QQ numbers, and group/C2C identities are not merged.
+
+When a natural request needs a directory lookup, the model can emit one bare JSON object: `{"type":"member_query","nickname":"小明"}`, `{"type":"member_query","member_openid":"COMPLETE_MEMBER_OPENID"}`, or `{"type":"member_query"}` for the known directory. The plugin intercepts it, binds the currently authorized group, queries only its cached identities, and returns data for the natural reply. Query JSON is never delivered to QQ. Other group, account, agent, scope, permission, and refresh fields are rejected; refresh remains on the existing command path below.
 
 For an explicit read-only lookup, mention the bot and send:
 
@@ -72,6 +90,39 @@ Results contain `group_openid`, `members`, `source`, and `complete`. The learned
 The directory is stored in host-scoped plugin settings as `groupMembers`, keyed by account and group. Only admitted group messages are observed, including non-mention messages QQ delivers. Learning identities never grants access or command permissions. Quote caches are conversation-scoped; unavailable authors are labeled explicitly.
 
 Trusted host clients can invoke `qqbot.group-members` with `{agentId, nickname?, member_openid?, refresh?}`. The persisted agent mapping selects the current QQ group; private chats, foreign hosts, revoked groups, and replaced mappings are rejected. QQ agents retain their mandatory sandbox: this RPC is not exposed as a model-accessible host tool or MCP connection.
+
+## QQ controlled game execution
+
+The trusted standalone engine defaults to `~/.omp/qqbot-games`. Enable it in the existing QQ configuration JSON editor; only Desktop can change this host-controlled setting:
+
+```json
+{"game":{"enabled":true,"engineDirectory":"~/.omp/qqbot-games"}}
+```
+
+`engineDirectory` may be omitted or left empty to use the default. A custom value must be an absolute or `~/` path outside the QQ sandbox. The host resolves its canonical `engine.js` and CommonJS `createGame(options)` export at startup. A missing or invalid entry fails explicitly; there is no bundled engine or fallback. Changes take effect after the existing plugin reload; safe conversations using the other protocol migrate on their next admitted message while preserving Desktop history.
+
+Players can use normal commands such as `我要修仙`, `新手礼包领取`, `闭关`, `我的背包`, and `突破`, or ask naturally. The agent understands wording and typos, submits normal actions, and explains the engine's actual result. Short breakthrough answers need no prefix or quotation; the engine allows at most one follow-up.
+
+The standalone CommonJS engine can be used by ordinary Node code with `require(path.join(require('node:os').homedir(), '.omp/qqbot-games')).createGame(options)`, or with its configured absolute path. Production data remains outside the sandbox at `~/.omp/qqbot-data/installation-<encodeURIComponent(installation.id)>/xiuxian.sqlite`; changing the source directory does not migrate or reset it. There is no configurable sandbox save path or JSON import. GM, sect extensions, sandbox runners, test routes, and synchronization paths are removed.
+
+Actions use the original QQ event's account, scene, peer, sender, and single explicit mention target. The model cannot supply identities, paths, time, randomness, or permissions. Completed assistant output is validated before QQ delivery; action JSON, malformed protocol output, and breakthrough scoring are never sent to players. The host validates the full scoring result and binds its trial/revision before settlement; invalid model results remain recoverable and do not count as a player's failed attempt.
+
+Breakthrough and rift reviews run in a fresh background child session using the parent's current model. The child shares workspace ownership, not conversation history; it receives only the current review request, complete schema, and real correction feedback. Its system prompt replaces chat rules, MCP connections are cleared, and permission requests are denied. Complete canonical output is returned to the engine for validation, never to QQ or as a parent completion notification. The plugin archives the child after success or failure; cancellation, timeout, `/stop`, and replacement input discard its result and stop the child without stopping unrelated sessions.
+
+Keep administrative commands separate from chat admission: set `access.commandMode` to `allowlist` and configure account-local `owners`. A group owner requires `scene: "group"`, the exact member `openid`, and the exact `groupOpenid`. `nickname` and `sceneName` are display data, not authorization. Legacy group owners without `groupOpenid` do not grant access. C2C identities and other groups cannot inherit that owner permission. Owner checks also protect permission approvals; ordinary question answers remain bound to their original sender. Administrators have no GM game mode.
+
+Trusted host clients can invoke `qqbot.game.inspect` with `{scope, openid, userId, text?}` to read the fixed database path, command recognition, and player snapshot. It does not execute actions, create players, invoke an agent, or send QQ messages; C2C queries require `openid === userId`. It is not exposed as a sandbox tool or MCP connection.
+
+From the standalone engine directory, run its behavior suite with `npm test`. From the Desktop repository root, build and test the plugin against that real external engine:
+
+```sh
+npm run build --workspace=@omp-desktop/plugin-qqbot
+QQBOT_TEST_ENGINE_DIRECTORY=~/.omp/qqbot-games \
+  OMP_DESKTOP_TEST_SDK_ROOT=/path/to/built/omp-sdk-node-root \
+  npm run test --workspace=@omp-desktop/plugin-qqbot
+```
+
+The plugin suite never copies or falls back to an embedded engine. `OMP_DESKTOP_TEST_SDK_ROOT` must contain the built Desktop Node SDK and its native `SandboxFs` addon.
 
 ## License
 

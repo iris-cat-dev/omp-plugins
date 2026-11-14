@@ -1,6 +1,6 @@
 import type { PluginServiceContext, PluginManagementContext } from '@omp-desktop/plugin/server';
 import { StateStore, Pairing, listKey, switchAccount, type State } from './state.ts';
-import { status, action, sendFile, exportAccess, groupMembers } from './rpc.ts';
+import { status, action, sendFile, exportAccess, groupMembers, gameInspect } from './rpc.ts';
 import { Binding, type Credentials } from './binding.ts';
 import { Gateway } from './gateway.ts';
 import { importDsh } from './importer.ts';
@@ -33,6 +33,7 @@ class Runtime {
     if(this.ctx.role==='service'){
       this.ctx.handle(sendFile,async value=>{if(!this.gateway)throw new Error('QQ 网关尚未就绪');await this.gateway.sendFile(value.agentId,value.path,value.type,value.target);return{sent:true as const};});
       this.ctx.handle(groupMembers,async({agentId,...input})=>{if(!this.gateway)throw new Error('QQ 网关尚未就绪');return this.gateway.queryGroupMembers(agentId,input);});
+      this.ctx.handle(gameInspect,async input=>{if(!this.gateway)throw new Error('QQ 网关尚未就绪');return this.gateway.inspectGame(input);});
       void this.poll();
     }
     this.ctx.signal.addEventListener('abort',()=>this.dispose(),{once:true});

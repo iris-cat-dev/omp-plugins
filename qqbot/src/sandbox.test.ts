@@ -1,7 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { createActivationScope, createPluginOmpApi } from '@omp-desktop/plugin/server';
-import { mkdtemp, realpath, rm, stat, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir, homedir } from 'node:os';
 import type * as Os from 'node:os';
 import { basename, join, parse } from 'node:path';
@@ -10,6 +10,7 @@ import type { OmpApi, OmpAgentHandle, OmpAgentCreateOptions, OmpAgentObservation
 import { Gateway } from './gateway.ts';
 import { Pairing, StateSchema, StateStore, peerKey, type Peer } from './state.ts';
 import * as media from './media.ts';
+import { testEngineDirectory } from '../tests/game-fixture.ts';
 
 const isolatedHome = vi.hoisted(() => ({ path: null as string | null }));
 vi.mock('node:os', async importOriginal => {
@@ -26,12 +27,12 @@ interface AgentDirectoryFixture {
   pageInfo: { nextCursor: string | null; prevCursor: null; hasMore: boolean };
 }
 interface DownloadedSandboxAttachment { path: string; relativePath: string; mimeType: string; size: number }
-async function fixture(sandboxPath?: string, provider = 'omp', presentedFiles = false, sandboxCapabilities?: { javascript: boolean; network: boolean; imageGeneration?: boolean }) {
+async function fixture(sandboxPath?: string, provider = 'omp', presentedFiles = false, sandboxCapabilities?: { javascript: boolean; network: boolean; imageGeneration?: boolean }, gameEnabled = false, engineDirectory = gameEnabled ? testEngineDirectory : '') {
   const directory = await mkdtemp(join(tmpdir(), 'qq-sandbox-'));
   cleanups.push(() => rm(directory, { recursive: true, force: true }));
   const root = await realpath(directory);
   const key = peerKey('saved-app', 'c2c', 'peer');
-  let values = StateSchema.parse({ config: { appId: 'saved-app', sandboxPath: sandboxPath ?? root, sandboxCapabilities, sendFile: { sendPresentedFiles: presentedFiles, extraRoots: ['/outside'] }, presets: [{ name: 'default', config: { provider, modeId: 'full', thinkingOptionId: 'high', systemPrompt: 'Keep prompt' }, qq: { prompt: 'QQ context' } }] }, modelSelections: { [key]: 'provider/model' }, credentialVersions: { 'saved-app': 1 } });
+  let values = StateSchema.parse({ config: { appId: 'saved-app', sandboxPath: sandboxPath ?? root, sandboxCapabilities, streaming:false,autoCompactTokens:0,game: { enabled: gameEnabled, engineDirectory }, sendFile: { sendPresentedFiles: presentedFiles, extraRoots: ['/outside'] }, presets: [{ name: 'default', config: { provider, modeId: 'full', thinkingOptionId: 'high', systemPrompt: 'Keep prompt' }, qq: { prompt: 'QQ context' } }] }, modelSelections: { [key]: 'provider/model' }, credentialVersions: { 'saved-app': 1 } });
   let revision = 0;
   const storage = { get: async () => ({ revision, values: structuredClone(values) }), patch: async (patch: unknown, expected: number) => { if (expected !== revision) throw new Error('STORAGE_REVISION_CONFLICT'); values = StateSchema.parse(patch); return { revision: ++revision, values }; } } as unknown as PluginStorage;
   const store = new StateStore(storage);
@@ -59,9 +60,60 @@ async function fixture(sandboxPath?: string, provider = 'omp', presentedFiles = 
   const gateway = new Gateway(ctx, store, new Pairing(store), values.config, 'fixture-secret', { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }, vi.fn());
   cleanups.push(() => gateway.dispose());
   const internal = gateway as unknown as { getOrCreate(scope: 'c2c' | 'group', openid: string, reset?: boolean): Promise<{ peer: Peer; agent: OmpAgentHandle }>; routes: Map<string, unknown>; event(route: unknown, stream: OmpAgentStream): Promise<void>; deliverFile(route:unknown,path:string,type:string,target:unknown):Promise<void>; sender: { sendMarkdown: (...args: unknown[]) => Promise<unknown> }; bot: { start():Promise<void>;sendImage:(...args:unknown[])=>Promise<unknown>;apiClient: { request: (...args: unknown[]) => Promise<unknown> } }; deliveryRoute: { run<T>(route: unknown, callback: () => T): T } };
-  const saved = (sandbox?: Peer['sandbox']): Peer => ({ appId: 'saved-app', scope: 'c2c', openid: 'peer', hostId: 'host', workspaceId: 'old-workspace', agentId: old.id, cwd: sandbox?.root ?? root, sandbox, preset: 'default', template: values.config.presets[0]!, protocolPrompt: 'Old QQ context', lastDeliveredSequence: 4 });
+  const saved = (sandbox?: Peer['sandbox']): Peer => ({ appId: 'saved-app', scope: 'c2c', openid: 'peer', hostId: 'host', workspaceId: 'old-workspace', agentId: old.id, cwd: sandbox?.root ?? root, sandbox, preset: 'default', template: values.config.presets[0]!, protocolPrompt: 'Old QQ context', protocolVersion: 2, lastDeliveredSequence: 4 });
   return { ctx, root, key, store, old, fresh, create, internal, gateway, unsubscribe, saved, native, list, occupiedWorkspaces };
 }
+
+interface ReplyFixture {key:string;internal:{routes:Map<string,unknown>;event(route:unknown,stream:OmpAgentStream):Promise<void>}}
+async function emitReply(f:ReplyFixture,id:string,text:string){
+  const route=f.internal.routes.get(f.key)!;const turnId=`turn-${id}`;
+  await f.internal.event(route,{event:{type:'turn_started',turnId}} as OmpAgentStream);
+  await f.internal.event(route,{seq:5,event:{type:'timeline',turnId,item:{type:'user_message',text:'maintenance or QQ input',clientMessageId:id}}} as OmpAgentStream);
+  await f.internal.event(route,{seq:6,event:{type:'timeline',turnId,item:{type:'assistant_message',messageId:`reply-${id}`,text}}} as OmpAgentStream);
+  await f.internal.event(route,{seq:7,event:{type:'turn_completed',turnId}} as OmpAgentStream);
+}
+
+it('legacy startup leaves the active turn running and the first admitted input migrates with a consumed handoff',async()=>{
+  const f=await fixture();const sandbox={root:f.root};
+  const saved=f.saved(sandbox);delete saved.protocolVersion;
+  await f.store.mutate(state=>{state.peers[f.key]=saved;});
+  const waiting=Promise.withResolvers<void>();const finish=Promise.withResolvers<void>();
+  const waitForFinish=vi.fn(async()=>{waiting.resolve();await finish.promise;return{status:'idle',error:null};});
+  f.old.refresh.mockResolvedValue(Object.assign({agent:{id:f.old.id,sandbox}},{agent:{id:f.old.id,sandbox,activeTurn:{turnId:'already-running'}}}));
+  const archive=vi.fn();
+  Object.assign(f.old,{observe:f.fresh.observe,waitForFinish,archive,send:async(_text:string,options:{messageId:string})=>emitReply(f,options.messageId,JSON.stringify({memory:'CAROL_FULL_OPENID 偏好简短回复，附件为 source.png。',activeTasks:['完成当前图片修改']}))});
+  Object.assign(f.fresh,{send:async(_text:string,options:{messageId:string})=>emitReply(f,options.messageId,'图片修改请求已接收。')});
+  const delivered=vi.spyOn(f.internal.sender,'sendMarkdown').mockResolvedValue(undefined);
+  vi.spyOn(f.internal.bot,'start').mockResolvedValue();
+  await writeFile(join(f.root,'source.png'),'retained attachment');
+  await f.gateway.start();
+  expect(f.old.stop).not.toHaveBeenCalled();expect(f.create).not.toHaveBeenCalled();
+  const internal=f.gateway as unknown as {message(context:unknown):Promise<void>};
+  const work=internal.message({replyTarget:{scope:'c2c',targetId:'peer',msgId:'current-message'},message:{kind:'c2c',senderId:'peer',content:'继续改图'},state:{envelope:'继续改图'}});
+  await waiting.promise;
+  expect(f.old.stop).not.toHaveBeenCalled();expect(f.create).not.toHaveBeenCalled();
+  await f.store.mutate(state=>{state.modelSelections[f.key]='provider/current-model';});
+  finish.resolve();await work;
+  const state=(await f.store.read()).values;
+  expect(state.peers[f.key]).toMatchObject({agentId:f.fresh.id,protocolVersion:2,cwd:f.root});
+  expect(state.peers[f.key]!.handoff).toBeUndefined();
+  expect(state.modelSelections[f.key]).toBe('provider/current-model');
+  expect(delivered.mock.calls.map(call=>call[1])).toEqual(['图片修改请求已接收。']);
+  expect(f.old.stop).toHaveBeenCalledOnce();expect(archive).not.toHaveBeenCalled();
+  expect((await stat(join(f.root,'source.png'))).isFile()).toBe(true);
+});
+
+it('invalid legacy handoff leaves the saved conversation intact and never replies its JSON to QQ',async()=>{
+  const f=await fixture();const sandbox={root:f.root};const saved=f.saved(sandbox);delete saved.protocolVersion;
+  await f.store.mutate(state=>{state.peers[f.key]=saved;});
+  f.old.refresh.mockResolvedValue({agent:{id:f.old.id,sandbox}});
+  Object.assign(f.old,{observe:f.fresh.observe,send:async(_text:string,options:{messageId:string})=>emitReply(f,options.messageId,'{"type":"member_query","refresh":true}')});
+  const delivered=vi.spyOn(f.internal.sender,'sendMarkdown').mockResolvedValue(undefined);
+  const result=await f.internal.getOrCreate('c2c','peer').catch(error=>error);
+  expect(result).toBeInstanceOf(Error);
+  expect((await f.store.read()).values.peers[f.key]?.agentId).toBe(f.old.id);
+  expect(f.create).not.toHaveBeenCalled();expect(f.old.stop).not.toHaveBeenCalled();expect(delivered).not.toHaveBeenCalled();
+});
 
 it('creates mandatory sandbox with safe approval while preserving saved model and prompts', async () => {
   const f = await fixture();
@@ -295,14 +347,14 @@ it('presented file uploads require explicit opt-in', async () => {
   expect(send).not.toHaveBeenCalled();
 });
 
-it.each(['root', 'javascript', 'network', 'imageGeneration'] as const)('%s change prevents a late model acknowledgement from overwriting peer preference', async change => {
+it.each(['root', 'engineDirectory', 'javascript', 'network', 'imageGeneration'] as const)('%s change prevents a late model acknowledgement from overwriting peer preference', async change => {
   const f=await fixture();await f.internal.getOrCreate('c2c','peer');
   const called=Promise.withResolvers<void>();const acknowledged=Promise.withResolvers<void>();
   Object.assign(f.fresh,{setModel:vi.fn(()=>{called.resolve();return acknowledged.promise;})});
   const internal=f.gateway as unknown as {command(context:unknown,text:string):Promise<void>};
   const work=internal.command({replyTarget:{scope:'c2c',targetId:'peer'},message:{senderId:'peer'}},'/model provider/new-model');
   const settled=work.catch(error=>error);await called.promise;
-  await f.store.mutate(s=>{if(change==='root')s.config.sandboxPath=join(f.root,'next');else s.config.sandboxCapabilities[change]=true;});acknowledged.resolve();
+  await f.store.mutate(s=>{if(change==='root')s.config.sandboxPath=join(f.root,'next');else if(change==='engineDirectory')s.config.game.engineDirectory=testEngineDirectory;else s.config.sandboxCapabilities[change]=true;});acknowledged.resolve();
   expect(await settled).toBeInstanceOf(Error);
   expect((await f.store.read()).values.modelSelections[f.key]).toBe('provider/model');
 });
@@ -423,4 +475,79 @@ it.each(['observation-failed','unconfirmed-sandbox'] as const)('keeps saved-agen
   expect(f.internal.routes.size).toBe(0);
   expect((await f.store.read()).values.peers[f.key]?.agentId).toBe(f.old.id);
   expect((await f.store.read()).values.modelSelections[f.key]).toBe('provider/model');
+});
+it('enabling the trusted host game retires a matching sandbox agent with polluted old context',async()=>{
+  const f=await fixture(undefined,'omp',false,undefined,true);
+  await f.store.mutate(state=>{state.peers[f.key]=f.saved({root:f.root});});
+  f.old.refresh.mockResolvedValue({agent:{id:f.old.id,sandbox:{root:f.root}}});
+  Object.assign(f.old,{observe:f.fresh.observe,send:async(_text:string,options:{messageId:string})=>emitReply(f,options.messageId,'{"memory":"","activeTasks":[]}')});
+  const route=await f.internal.getOrCreate('c2c','peer');
+  expect(f.old.stop).toHaveBeenCalledOnce();expect(route.agent.id).toBe('new-agent');
+  expect(route.peer.protocolVersion).toBe(2);
+  expect((await f.store.read()).values.peers[f.key]?.agentId).toBe(route.agent.id);
+});
+it('never permits the sandbox to cover host game data',async()=>{
+  const f=await fixture(join(homedir(),'.omp','qqbot-data'));
+  await expect(f.internal.getOrCreate('c2c','peer')).rejects.toThrow('宿主游戏数据目录重叠');
+  expect(f.native.invoke).not.toHaveBeenCalled();expect(f.create).not.toHaveBeenCalled();
+});
+it('never permits the sandbox to cover installed plugin code',async()=>{
+  const f=await fixture(new URL('..',import.meta.url).pathname);
+  await expect(f.internal.getOrCreate('c2c','peer')).rejects.toThrow('插件代码');
+  expect(f.native.invoke).not.toHaveBeenCalled();expect(f.create).not.toHaveBeenCalled();
+});
+
+it.each(['same', 'inside', 'cover', 'alias'] as const)('protects a registered engine from %s sandbox overlap while the game is disabled', async kind => {
+  const directory=await mkdtemp(join(tmpdir(),'qqbot-engine-protection-'));
+  cleanups.push(()=>rm(directory,{recursive:true,force:true}));
+  const engine=join(directory,'engine');await mkdir(engine);
+  const alias=join(directory,'alias');await symlink(directory,alias,'dir');
+  const sandbox=kind==='same'?engine:kind==='inside'?join(engine,'sandbox'):kind==='cover'?directory:join(alias,'engine','sandbox');
+  const f=await fixture(sandbox,'omp',false,undefined,false,engine);
+  await expect(f.gateway.start()).rejects.toThrow('独立游戏引擎目录');
+  expect(f.native.invoke).not.toHaveBeenCalled();expect(f.create).not.toHaveBeenCalled();
+});
+
+it('rejects an entry symlink into the sandbox before acquiring sandbox capabilities', async () => {
+  const directory=await mkdtemp(join(tmpdir(),'qqbot-engine-entry-'));
+  cleanups.push(()=>rm(directory,{recursive:true,force:true}));
+  const engine=join(directory,'engine');const sandbox=join(directory,'sandbox');
+  await mkdir(engine);await mkdir(sandbox);await writeFile(join(sandbox,'engine.js'),'throw new Error("untrusted entry executed");');
+  await symlink(join(sandbox,'engine.js'),join(engine,'engine.js'));
+  const f=await fixture(sandbox,'omp',false,undefined,true,engine);
+  await expect(f.gateway.start()).rejects.toThrow('入口不能解析到 QQ 沙箱');
+  expect(f.native.invoke).not.toHaveBeenCalled();expect(f.create).not.toHaveBeenCalled();
+});
+
+it('engine-directory changes immediately invalidate old delivery without changing account or chat state', async () => {
+  const f=await fixture();const route=await f.internal.getOrCreate('c2c','peer');
+  const before=(await f.store.read()).values;
+  await f.store.mutate(state=>{state.config.game.engineDirectory=testEngineDirectory;});
+  const send=vi.spyOn(f.internal.sender,'sendMarkdown');
+  await f.internal.event(route,{event:{type:'turn_failed',error:'HOST_SECRET'}} as unknown as OmpAgentStream);
+  expect(send).not.toHaveBeenCalled();
+  await expect(f.internal.bot.apiClient.request('token','POST','/v2/users/peer/messages',{})).rejects.toThrow('沙箱配置');
+  const after=(await f.store.read()).values;
+  expect(after.config.appId).toBe(before.config.appId);expect(after.access).toEqual(before.access);
+  expect(after.credentialVersions).toEqual(before.credentialVersions);expect(after.peers).toEqual(before.peers);
+  expect(after.modelSelections).toEqual(before.modelSelections);expect(after.config.game.enabled).toBe(false);
+});
+
+it('enabled game startup resolves the default engine directory and reports when it is absent', async () => {
+  const home=await realpath(await mkdtemp(join(tmpdir(),'qqbot-game-home-')));
+  cleanups.push(()=>rm(home,{recursive:true,force:true}));isolatedHome.path=home;
+  const missing=await fixture(undefined,'omp',false,undefined,true,'');
+  await expect(missing.gateway.start()).rejects.toMatchObject({code:'ENOENT',path:join(home,'.omp','qqbot-games')});
+});
+
+it('starts the real external engine at the unchanged installation database path without QQ network I/O', async () => {
+  const home=await mkdtemp(join(tmpdir(),'qqbot-game-home-'));
+  cleanups.push(()=>rm(home,{recursive:true,force:true}));isolatedHome.path=home;
+  const f=await fixture(undefined,'omp',false,undefined,true);
+  vi.spyOn(f.internal.bot,'start').mockResolvedValue();
+  await f.gateway.start();
+  const inspected=await f.gateway.inspectGame({scope:'c2c',openid:'peer',userId:'peer',text:'我要修仙'});
+  expect(inspected.enabled).toBe(true);expect(inspected.parsed).toEqual({text:'我要修仙'});
+  expect(inspected.databasePath).toBe(join(home,'.omp','qqbot-data','installation-installation','xiuxian.sqlite'));
+  expect(inspected.player).toBeNull();expect((await stat(inspected.databasePath)).isFile()).toBe(true);
 });

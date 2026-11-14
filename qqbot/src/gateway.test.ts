@@ -97,17 +97,19 @@ it.each([false, true])('failed tool events stay internal while the final reply s
   }
 });
 
-function queuedConversation() {
-  const values = StateSchema.parse({ config: { appId: 'test-account', streaming: false } });
+function queuedConversation(autoCompactTokens=0) {
+  const values = StateSchema.parse({ config: { appId: 'test-account', streaming: false, autoCompactTokens } });
   const storage = { get: async () => ({ revision: 0, values: structuredClone(values) }), patch: vi.fn() } as unknown as PluginStorage;
   const store = new StateStore(storage);
   const context = { signal: new AbortController().signal, installation: { id: 'installation', generation: 2 }, omp: {} } as unknown as PluginServiceContext;
-  const gateway = new Gateway(context, store, new Pairing(store), values.config, 'fixture-only-secret', { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }, vi.fn());
+  const logger={debug:vi.fn(),info:vi.fn(),warn:vi.fn(),error:vi.fn()};
+  const gateway = new Gateway(context, store, new Pairing(store), values.config, 'fixture-only-secret', logger, vi.fn());
   const started = [Promise.withResolvers<string>(), Promise.withResolvers<string>()];
   let inputIndex = 0;
-  const agent = { send: vi.fn(async (_text: string, options: { messageId: string }) => { started[inputIndex++]!.resolve(options.messageId); }), stop: vi.fn() };
-  const route = { peer: { appId: 'test-account', scope: 'group' as const, openid: 'peer', agentId: 'agent' }, agent, enabledDelivery: false, target: undefined, buffer: null, files: new Map(), textRows: new Map(), toolRevisions: new Map(), pending: new Map(), epoch: 'before-resume', lastSeq: 74 };
-  const internal = gateway as unknown as { bot: QQBot; routes: Map<string, typeof route>; getOrCreate: () => Promise<typeof route>; message: (context: MiddlewareContext) => Promise<void>; event: (route: typeof route, stream: OmpAgentStream) => Promise<void>; sender: { sendMarkdown: (target: unknown, text: string) => Promise<void> } };
+  const usage={contextWindowUsedTokens:64000,compactionCount:0};
+  const agent = { refresh:vi.fn(async()=>({agent:{activeTurn:null,lastUsage:structuredClone(usage)}})),compact:vi.fn(async()=>{}),send: vi.fn(async (_text: string, options: { messageId: string }) => { started[inputIndex++]!.resolve(options.messageId); }), stop: vi.fn() };
+  const route = { peer: { appId: 'test-account', scope: 'group' as const, openid: 'peer', agentId: 'agent' }, agent, enabledDelivery: false, target: undefined, buffer: null, files: new Map(), textRows: new Map(), toolRevisions: new Map(), pending: new Map(), chain:Promise.resolve(), epoch: 'before-resume', lastSeq: 74 };
+  const internal = gateway as unknown as { bot: QQBot; routes: Map<string, typeof route>; getOrCreate: () => Promise<typeof route>; message: (context: MiddlewareContext) => Promise<void>; event: (route: typeof route, stream: OmpAgentStream) => Promise<void>; compactRoute(route:typeof route,automatic?:boolean):Promise<void>;sender: { sendMarkdown: (target: unknown, text: string) => Promise<void> } };
   internal.routes.set(peerKey('test-account', 'group', 'peer'), route);
   vi.spyOn(internal, 'getOrCreate').mockResolvedValue(route);
   const delivered = vi.spyOn(internal.sender, 'sendMarkdown').mockResolvedValue();
@@ -121,8 +123,62 @@ function queuedConversation() {
     await event({ type: 'timeline', turnId, item: { type: 'assistant_message', text } }, seq, epoch);
     await event({ type: 'turn_completed', turnId });
   };
-  return { gateway, agent, started, event, message, begin, finish, delivered };
+  return { gateway, agent, started, event, message, begin, finish, delivered,usage,logger,compact:(automatic=false)=>internal.compactRoute(route,automatic) };
 }
+
+it('threshold maintenance starts after QQ delivery and keeps the next sender queued until native completion',async()=>{
+  const f=queuedConversation(64000);
+  const acknowledged=Promise.withResolvers<void>();
+  f.agent.compact.mockImplementation(async()=>{
+    expect(f.delivered).toHaveBeenCalledExactlyOnceWith({scope:'group',targetId:'peer',msgId:'Iris'},'first answer');
+    await f.event({type:'timeline',item:{type:'compaction',status:'loading',trigger:'manual'}} as OmpAgentStream['event']);
+    acknowledged.resolve();
+  });
+  const first=f.message('Iris');const second=f.message('Cassandra');
+  try{
+    await f.begin(await f.started[0]!.promise,'turn-1',75);
+    await f.finish('turn-1','first answer',76);
+    await acknowledged.promise;await nextImmediate();
+    expect(f.agent.send).toHaveBeenCalledTimes(1);
+    f.usage.compactionCount++;f.usage.contextWindowUsedTokens=12000;
+    await f.event({type:'timeline',item:{type:'compaction',status:'completed',trigger:'manual'}} as OmpAgentStream['event']);
+    await first;
+    await f.begin(await f.started[1]!.promise,'turn-2',77);
+    await f.finish('turn-2','second answer',78);await second;
+    expect(f.agent.compact).toHaveBeenCalledOnce();
+    expect(f.logger.error).not.toHaveBeenCalled();
+  }finally{f.gateway.dispose();await Promise.allSettled([first,second]);vi.restoreAllMocks();}
+});
+
+it('automatic maintenance skips small contexts and active Desktop turns',async()=>{
+  const f=queuedConversation(64000);
+  try{
+    f.usage.contextWindowUsedTokens=63999;await f.compact(true);
+    f.usage.contextWindowUsedTokens=64000;
+    f.agent.refresh.mockResolvedValueOnce({agent:{activeTurn:{turnId:'desktop-turn'} as never,lastUsage:f.usage}});
+    await f.compact(true);
+    expect(f.agent.compact).not.toHaveBeenCalled();
+  }finally{f.gateway.dispose();vi.restoreAllMocks();}
+});
+
+it('a completed native command without a new compaction result reports failure',async()=>{
+  const f=queuedConversation();
+  f.agent.compact.mockImplementation(async()=>{
+    for(const status of ['loading','completed'] as const)await f.event({type:'timeline',item:{type:'compaction',status,trigger:'manual'}} as OmpAgentStream['event']);
+  });
+  try{await expect(f.compact()).rejects.toThrow('没有产生新的压缩结果');}
+  finally{f.gateway.dispose();vi.restoreAllMocks();}
+});
+
+it('a failed native acknowledgement keeps future QQ inputs paused without stopping the parent',async()=>{
+  const f=queuedConversation();const failure=new Error('Native compact admission failed');
+  f.agent.compact.mockRejectedValueOnce(failure);
+  try{
+    await expect(f.compact()).rejects.toBe(failure);
+    await expect(f.message('Iris')).rejects.toBe(failure);
+    expect(f.agent.send).not.toHaveBeenCalled();expect(f.agent.stop).not.toHaveBeenCalled();
+  }finally{f.gateway.dispose();vi.restoreAllMocks();}
+});
 
 it.each(['after-resume', undefined])('renumbered input releases the group queue without waiting for timeout (epoch=%s)', async epoch => {
   const f = queuedConversation();

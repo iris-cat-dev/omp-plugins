@@ -23,4 +23,21 @@ describe('QQ scoped state',()=>{
     expect(await store.read()).toEqual(before);
     expect(pairing.challenges.has(challenge.code)).toBe(false);
   });
+  it('keeps game opt-in, defaults the host engine directory, and rejects database or GM controls',()=>{
+    expect(ConfigSchema.parse({}).game).toEqual({enabled:false,engineDirectory:'~/.omp/qqbot-games'});
+    expect(ConfigSchema.parse({game:{enabled:true,engineDirectory:''}}).game.engineDirectory).toBe('~/.omp/qqbot-games');
+    expect(ConfigSchema.parse({game:{enabled:true,engineDirectory:'~/custom-game'}}).game.engineDirectory).toBe('~/custom-game');
+    expect(()=>ConfigSchema.parse({game:{enabled:true,databasePath:'/tmp/state'}})).toThrow();
+    expect(()=>ConfigSchema.parse({game:{enabled:true,gm:true}})).toThrow();
+  });
+  it('owner pairing preserves exact group member scope without merging C2C or another group',async()=>{
+    const store=new StateStore(memoryStorage());await store.mutate(s=>{s.config.appId='app';});
+    const pairing=new Pairing(store);const challenge=await pairing.issue('owner');
+    await pairing.claim(challenge.code,'group','group-a','same-id','Iris');
+    await pairing.claim(challenge.code,'group','group-a','same-id','renamed');
+    await pairing.claim(challenge.code,'group','group-b','same-id','Iris');
+    await pairing.claim(challenge.code,'c2c','same-id','same-id','Iris');
+    expect((await store.read()).values.access.owners.map(member=>[member.openid,member.scene,member.groupOpenid])).toEqual([['same-id','group','group-a'],['same-id','group','group-b'],['same-id','c2c',undefined]]);
+    expect(challenge.claims).toHaveLength(3);
+  });
 });

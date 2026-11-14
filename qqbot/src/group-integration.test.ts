@@ -8,9 +8,9 @@ import { StateSchema, StateStore, Pairing, peerKey, type Peer } from './state.ts
 const cleanups: Array<() => void> = [];
 afterEach(() => { for (const cleanup of cleanups.splice(0)) cleanup(); vi.restoreAllMocks(); });
 
-function conversation() {
+function conversation(responses:string[] = []) {
   let revision = 0;
-  let values = StateSchema.parse({ config: { appId: 'test-account', streaming: false } });
+  let values = StateSchema.parse({ config: { appId: 'test-account', streaming: false, autoCompactTokens: 0 } });
   const storage: PluginStorage = {
     async get<T>() { return { revision, values: structuredClone(values) as T }; },
     async patch<T>(patch: Partial<T>, expected: number) {
@@ -26,7 +26,7 @@ function conversation() {
   cleanups.push(() => gateway.dispose());
   const inputs: string[] = [];
   const peer: Peer = { appId: 'test-account', scope: 'group', openid: 'GROUP_OPENID', hostId: 'host', agentId: 'agent', workspaceId: 'workspace', cwd: '/fixture', preset: 'default', template: values.config.presets[0]!, protocolPrompt: '', lastDeliveredSequence: 0 };
-  const route = { peer, agent: {} as OmpAgentHandle, unsubscribe: null, enabledDelivery: false, target: undefined, buffer: null, files: new Map(), textRows: new Map(), toolRevisions: new Map(), pending: new Map(), lastSeq: 0 };
+  const route = { peer, agent: {} as OmpAgentHandle, unsubscribe: null, enabledDelivery: false, target: undefined, buffer: null, files: new Map(), textRows: new Map(), toolRevisions: new Map(), pending: new Map(), chain:Promise.resolve(), lastSeq: 0 };
   const internal = gateway as unknown as {
     bot: QQBot & { handleInboundMessage(message: Omit<QQBotInboundMessage, 'replyTarget'>): Promise<void> };
     routes: Map<string, typeof route>;
@@ -34,12 +34,15 @@ function conversation() {
     event(route: typeof route, event: OmpAgentStream): Promise<void>;
     sender: { sendMarkdown: (...args: unknown[]) => Promise<unknown> };
   };
+  let sequence=0;
   route.agent = { send: async (text: string, options: { messageId: string }) => {
     inputs.push(text);
     const turnId = options.messageId;
-    await internal.event(route, { event: { type: 'turn_started', turnId } });
-    await internal.event(route, { event: { type: 'timeline', turnId, item: { type: 'user_message', text, clientMessageId: options.messageId } } } as OmpAgentStream);
-    await internal.event(route, { event: { type: 'turn_completed', turnId } });
+    await internal.event(route, { seq:++sequence,event: { type: 'turn_started', turnId } } as OmpAgentStream);
+    await internal.event(route, { seq:++sequence,event: { type: 'timeline', turnId, item: { type: 'user_message', text, clientMessageId: options.messageId } } } as OmpAgentStream);
+    const response=responses.shift()??'';
+    for(let offset=0;offset<response.length;offset+=7)await internal.event(route,{seq:++sequence,event:{type:'timeline',turnId,item:{type:'assistant_message',text:response.slice(offset,offset+7),messageId:turnId}}} as OmpAgentStream);
+    await internal.event(route, { seq:++sequence,event: { type: 'turn_completed', turnId } } as OmpAgentStream);
   } } as unknown as OmpAgentHandle;
   internal.routes.set(peerKey(peer.appId, peer.scope, peer.openid), route);
   vi.spyOn(internal, 'getOrCreate').mockResolvedValue(route);
@@ -56,7 +59,7 @@ function conversation() {
 }
 
 it('the real SDK gateway sends complete sender, mention and cached quote identities to the agent', async () => {
-  const f = conversation();
+  const f = conversation(['','{"type":"member_query","nickname":"同名"}','两位同名群员有不同的完整OpenID。']);
   await f.send({ rawEventType: 'GROUP_MESSAGE_CREATE', senderId: 'ALICE_FULL_OPENID', senderName: '小明', content: '未 @机器人也保留引用作者', msgIdx: 'quiet-reference', mentions: [] });
   expect(f.inputs).toEqual([]);
   await f.send({ content: '<@BOT_FULL_OPENID> 两位同名群员分别是谁？', refMsgIdx: 'quiet-reference', msgElements: [{ content: '平台提供的完整引用正文' }], mentions: [
@@ -69,8 +72,9 @@ it('the real SDK gateway sends complete sender, mention and cached quote identit
   expect(f.inputs[0]).toContain('平台提供的完整引用正文');
   expect(f.inputs[0]).not.toContain('<@BOT_FULL_OPENID>');
   await f.send({ content: '<@BOT_FULL_OPENID> 现在再查同名群员' });
-  expect(f.inputs[1]).toContain('BOB_FULL_OPENID');
-  expect(f.inputs[1]).toContain('DAN_FULL_OPENID');
+  const result=JSON.parse(f.inputs[2]!.split('\n')[1]!);
+  expect(result.members.map((member:{member_openid:string})=>member.member_openid)).toEqual(['BOB_FULL_OPENID','DAN_FULL_OPENID']);
+  expect(f.delivered.mock.calls.map(call=>call[1])).toEqual(['两位同名群员有不同的完整OpenID。']);
   expect((await f.store.read()).values.access.owners).toEqual([]);
 });
 

@@ -22,18 +22,18 @@ export function parseAnswer(question: Question, text: string): Omit<Answer, 'id'
   if(!question.allowOther&&question.options.length)throw new Error('请选择列出的选项');
   return{selectedOptions:[],customInput:raw};
 }
-interface Card { request: AgentPermissionRequest; peer: Peer; target: ReplyTarget; nonce: string; expiresAt: number; questions: Question[] | null; index: number; answers: Answer[]; busy: boolean; timer: ReturnType<typeof setTimeout> }
+interface Card { request: AgentPermissionRequest; peer: Peer; target: ReplyTarget; senderId?: string; nonce: string; expiresAt: number; questions: Question[] | null; index: number; answers: Answer[]; busy: boolean; timer: ReturnType<typeof setTimeout> }
 const ButtonSchema = z.object({g:z.number().int(),a:z.string(),n:z.string(),r:z.string(),q:z.string().optional(),i:z.number().int().nonnegative().optional(),d:z.enum(['allow','deny']).optional()}).strict();
 const cardKey=(agentId:string,requestId:string)=>JSON.stringify([agentId,requestId]);
 export class Cards {
   private pending = new Map<string, Card>();
-  constructor(private generation: number, private signal: AbortSignal, private sender: QQBotSender, private respond: (id: string, requestId: string, response: AgentPermissionResponse) => Promise<void>, private authorized: (peer: Peer, sender: string) => Promise<boolean>, private timeoutMs: number, private report: (error: unknown) => void, private requireMention: boolean) {}
-  async show(peer: Peer, target: ReplyTarget, request: AgentPermissionRequest) {
+  constructor(private generation: number, private signal: AbortSignal, private sender: QQBotSender, private respond: (id: string, requestId: string, response: AgentPermissionResponse) => Promise<void>, private authorized: (peer: Peer, sender: string, approval?: boolean) => Promise<boolean>, private timeoutMs: number, private report: (error: unknown) => void, private requireMention: boolean) {}
+  async show(peer: Peer, target: ReplyTarget, request: AgentPermissionRequest, senderId?: string) {
     const key=cardKey(peer.agentId,request.id);
     if (this.signal.aborted || this.pending.has(key)) return;
     const parsed = request.kind === 'question' ? z.array(QuestionSchema).safeParse(request.input?.questions) : null;
     if (request.kind === 'question' && (!parsed?.success || parsed.data.length === 0)) throw new Error('宿主问题格式不受支持；请在 Desktop 中回答');
-    const card: Card = { request, peer, target, nonce: randomUUID(), expiresAt: Date.now() + this.timeoutMs, questions: parsed?.success ? parsed.data : null, index: 0, answers: [], busy: false, timer: setTimeout(() => { this.pending.delete(key); if (!this.signal.aborted) void this.sender.sendMarkdown(target, '问答／审批卡片已过期，请在 Desktop 中继续处理。').catch(this.report); }, this.timeoutMs) };
+    const card: Card = { request, peer, target, senderId: senderId ?? (peer.scope === 'c2c' ? peer.openid : undefined), nonce: randomUUID(), expiresAt: Date.now() + this.timeoutMs, questions: parsed?.success ? parsed.data : null, index: 0, answers: [], busy: false, timer: setTimeout(() => { this.pending.delete(key); if (!this.signal.aborted) void this.sender.sendMarkdown(target, '问答／审批卡片已过期，请在 Desktop 中继续处理。').catch(this.report); }, this.timeoutMs) };
     this.pending.set(key, card); await this.render(card);
   }
   resolved(agentId:string,requestId: string) { const key=cardKey(agentId,requestId);const card = this.pending.get(key); clearTimeout(card?.timer); this.pending.delete(key); }
@@ -50,11 +50,11 @@ export class Cards {
     await this.sender.sendMarkdown(card.target, text, rows.length ? { keyboard: { content: { rows } } } : undefined);
   }
   async text(peer: Peer, sender: string, text: string): Promise<boolean> {
-    const card = [...this.pending.values()].find(c => c.peer.agentId === peer.agentId && c.questions);
+    const card = [...this.pending.values()].find(c => c.peer.agentId === peer.agentId && c.questions && c.senderId === sender);
     if (!card) return false;
     if (!this.valid(card) || card.busy) return true;
     card.busy=true;
-    try { if (!sender || !await this.authorized(peer,sender) || !this.valid(card)) return true; await this.answer(card,parseAnswer(card.questions![card.index]!,text)); return true; }
+    try { if (!sender || !await this.authorized(peer,sender,false) || !this.valid(card)) return true; await this.answer(card,parseAnswer(card.questions![card.index]!,text)); return true; }
     finally { card.busy=false; }
   }
   async interaction(scope: 'c2c' | 'group', openid: string, sender: string, raw: string): Promise<boolean> {
@@ -64,7 +64,8 @@ export class Cards {
     if(!card||!this.valid(card)||card.busy||data.g!==this.generation||data.n!==card.nonce||card.peer.scope!==scope||card.peer.openid!==openid||!sender)return false;
     card.busy=true;
     try {
-      if(!await this.authorized(card.peer,sender)||!this.valid(card))return false;
+      if((card.questions&&card.senderId!==sender)||!await this.authorized(card.peer,sender,!card.questions))return false;
+      if(!this.valid(card))return false;
       if(card.questions){const q=card.questions[card.index]!;if(data.q!==(q.id??String(card.index))||data.i===undefined||!q.options[data.i]||q.multiSelect)return false;await this.answer(card,{selectedOptions:[q.options[data.i]!.label]});}
       else {if(data.d===undefined)return false;const action=card.request.actions?.find(action=>action.behavior===data.d);await this.respond(card.peer.agentId,card.request.id,{behavior:data.d,selectedActionId:action?.id});this.resolved(card.peer.agentId,card.request.id);}
       return true;
