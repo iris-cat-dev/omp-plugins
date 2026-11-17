@@ -12,7 +12,7 @@ Optional folder-installed plugins and source examples for [OMP Desktop](https://
 
 ## Build in a Desktop checkout
 
-Desktop pins this repository as its root `plugins/` Git submodule and includes the five plugin packages in its npm workspaces. The shared SDK, compiler, and host implementation remain in Desktop's `packages/plugin`; plugin builds use that checkout rather than a second SDK copy.
+Desktop pins this repository as its root `plugins/` Git submodule and includes the plugin packages in its npm workspaces. The shared SDK, compiler, and host implementation remain in Desktop's `packages/plugin`; plugin builds use that checkout rather than a second SDK copy. Keep exact `@omp-desktop/plugin` peer versions aligned with that package (currently `0.7.1`), and update Desktop's root `package-lock.json` when plugin workspaces or their dependencies change.
 
 From the Desktop checkout root:
 
