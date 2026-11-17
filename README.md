@@ -148,6 +148,8 @@ Production data retains its existing path outside the sandbox: `~/.omp/qqbot-dat
 
 Recognized commands return the engine's actual messages without model paraphrasing. Explicit multi-step requests remain result-driven and execute at most four actions. Complete assistant output is validated before delivery; action JSON, malformed protocols, and internal review JSON never reach QQ players.
 
+The default engine's `我的修仙信息`, `我的状态`, and `状态` replies show the current stone balance on a separate line below the player's name, realm, and spiritual root, with thousands separators.
+
 Group replies @ the original requester with QQ's [native mention format](https://bot.q.qq.com/wiki/develop/api-v2/server-inter/message/trans/text-chain.html), including every delayed chunk. Passive reply-ID fallback cannot replace that recipient. The mention counts toward the message length limit; private replies remain plain.
 
 Engine `choices: [{label, command}]` become native callback buttons. Callbacks carry only generation, nonce, and index; their server-side bindings retain the requester, scope, peer, route, turn, and engine selection snapshot. Menus use two buttons per row and at most five rows, rotate the nonce on page changes, and attach only to the final message chunk. Type-11 interactions are acknowledged before joining the peer queue. Stale, duplicate, expired, stopped, or revoked callbacks cannot execute.
