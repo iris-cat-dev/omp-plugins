@@ -1,6 +1,6 @@
 {
   "name": "@omp-desktop/plugin-desktop-pet",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "private": true,
   "type": "module",
   "main": "dist/cjs/client.js",
@@ -25,6 +25,6 @@
     "entries": { "client": "./dist/esm/client.js", "service": "./dist/esm/service.js" },
     "capabilities": ["native.overlay", "files.scoped", "native.dialog", "native.navigation", "agents.events", "agents.create"]
   },
-  "dependencies": { "@omp-desktop/plugin": "0.7.1", "@omp-desktop/client": "*", "@omp-desktop/protocol": "*", "sharp": "^0.35.4", "zod": "^4.4.3" },
+  "dependencies": { "@omp-desktop/plugin": "0.7.2", "@omp-desktop/client": "*", "@omp-desktop/protocol": "*", "sharp": "^0.35.4", "zod": "^4.4.3" },
   "peerDependencies": { "react": "*", "react-native": "*", "react-i18next": "*", "react-native-unistyles": "*" }
 }
