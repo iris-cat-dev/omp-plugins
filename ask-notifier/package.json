@@ -1,11 +1,11 @@
 {
   "name": "omp-wechat-ask-notifier",
-  "version": "0.3.1",
+  "version": "0.5.0",
   "private": true,
   "license": "AGPL-3.0-or-later",
-  "description": "OMP 等待回答时，通过 QQ 我的手机与微信文件传输助手发送问题与全部选项提醒",
+  "description": "OMP 有事项待回答、确认或审批时，通过 QQ 提醒选定的手机和 Pad",
   "type": "module",
-  "files": ["dist", "bridge/*.py", "bridge/requirements.txt", "native", "runtime", "licenses", "scripts/prepare-runtime.mjs", "scripts/build-qq-native.ps1", "准备提醒.cmd", "README.md"],
+  "files": ["dist", "bridge/*.py", "bridge/requirements.txt", "native/qq", "runtime", "scripts/prepare-runtime.mjs", "scripts/build-qq-native.ps1", "准备提醒.cmd", "README.md"],
   "ompDesktop": {
     "apiVersion": 1,
     "id": "wechat-ask-notifier",
@@ -16,8 +16,7 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "build:qq-native": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-qq-native.ps1",
-    "build:wechat-native": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File native/engine/build.ps1 -OutDir native/runtime",
-    "prepare:wechat": "node scripts/prepare-runtime.mjs",
+    "prepare:runtime": "node scripts/prepare-runtime.mjs",
     "test": "node --test tests/*.test.mjs"
   },
   "devDependencies": {

@@ -5,15 +5,16 @@ import path from 'node:path';
 const REQUEST_ID = /^(?!0{32}$)[0-9a-f]{32}$/;
 const INSPECT_STATES = new Set(['ready', 'not_logged_in', 'unsupported', 'multiple_accounts', 'not_installed', 'login_timeout', 'error']);
 const SEND_STATES = new Set(['submitted', 'not_logged_in', 'unsupported', 'multiple_accounts', 'failed', 'unknown']);
+const TARGETS = new Set(['phone', 'pad']);
 const UNKNOWN = 'QQ 工作进程中断或超时，客户端提交结果未知，禁止重发；关闭提醒不等于撤回 QQ 工作。';
 const inspection = (state, reason = null) => ({ state, reason, accountId: null, version: null });
 const outcome = (state, reason = null, accountId = null) => ({ state, reason, accountId });
 const MAX_LINE_BYTES = 65_536;
 
 function runtimePath(packageRoot) {
-  const explicit = process.env.OMP_WECHAT_NOTIFIER_PYTHON;
+  const explicit = process.env.OMP_QQ_NOTIFIER_PYTHON;
   if (explicit) {
-    if (!path.isAbsolute(explicit) || !existsSync(explicit)) throw new Error('OMP_WECHAT_NOTIFIER_PYTHON 必须是已存在的独立 Python x64 的绝对路径。');
+    if (!path.isAbsolute(explicit) || !existsSync(explicit)) throw new Error('OMP_QQ_NOTIFIER_PYTHON 必须是已存在的独立 Python x64 的绝对路径。');
     return explicit;
   }
   for (const candidate of [path.join(packageRoot, 'runtime/python/python.exe'), path.join(packageRoot, '.runtime/python/Scripts/python.exe')]) {
@@ -61,9 +62,10 @@ function validateResult(method, value) {
 }
 
 class WorkerFailure extends Error {
-  constructor(message, mayHaveSubmitted = false) {
+  constructor(message, mayHaveSubmitted = false, requestRejected = false) {
     super(message);
     this.mayHaveSubmitted = mayHaveSubmitted;
+    this.requestRejected = requestRejected;
   }
 }
 
@@ -77,6 +79,8 @@ export function createQQSender({ packageRoot, dataDirectory, signal }) {
   let login;
   let launchedQQ = null;
   let temporaryQQ = null;
+  let sealed = false;
+  const bindings = new Map();
   const owned = new Set();
   const uncertain = new Map();
   const loginAbort = new AbortController();
@@ -132,7 +136,8 @@ export function createQQSender({ packageRoot, dataDirectory, signal }) {
             if (Object.hasOwn(envelope, 'result') || !envelope.error || typeof envelope.error.message !== 'string') throw new Error('QQ 错误回包无效。');
             clearTimeout(pending.timer);
             current.pending.delete(envelope.id);
-            pending.reject(new WorkerFailure(envelope.error.message, pending.method === 'send' && pending.written));
+            const rejected = envelope.error.code === 'invalid_request';
+            pending.reject(new WorkerFailure(envelope.error.message, !rejected && pending.method === 'send' && pending.written, rejected));
           } else {
             const value = validateResult(pending.method, envelope.result);
             clearTimeout(pending.timer);
@@ -236,33 +241,53 @@ export function createQQSender({ packageRoot, dataDirectory, signal }) {
   };
 
   const send = (params) => serial(async () => {
-    if (!params || typeof params !== 'object' || Object.keys(params).length !== 2
-        || !Object.hasOwn(params, 'requestId') || !Object.hasOwn(params, 'text')
+    if (!params || typeof params !== 'object' || Array.isArray(params) || Object.keys(params).length !== 3
+        || !Object.hasOwn(params, 'requestId') || !Object.hasOwn(params, 'target') || !Object.hasOwn(params, 'text')
         || typeof params.requestId !== 'string' || !REQUEST_ID.test(params.requestId)
+        || !TARGETS.has(params.target)
         || typeof params.text !== 'string' || !params.text || params.text.includes('\0')
         || !params.text.isWellFormed() || Buffer.byteLength(params.text, 'utf8') > 4094) {
-      return outcome('failed', '仅允许 requestId 和 1–4094 UTF-8 字节、无 NUL 的 text；目标固定为内置自身设备。');
+      return outcome('failed', '仅允许 requestId、target（phone/pad）和 1–4094 UTF-8 字节、无 NUL 的 text。');
     }
+    params = { requestId: params.requestId, target: params.target, text: params.text };
+    const bound = bindings.get(params.requestId);
+    if (bound && (bound.target !== params.target || bound.text !== params.text)) {
+      return outcome('failed', 'requestId 已绑定其他目标或内容，禁止重发。');
+    }
+    if (!bound) bindings.set(params.requestId, { target: params.target, text: params.text });
     if (uncertain.has(params.requestId)) return uncertain.get(params.requestId);
     if (closed || signal?.aborted) return outcome('failed', 'QQ 提醒发送器已关闭，本次未提交。');
     if (!platformSupported()) return outcome('unsupported', 'QQ 提醒仅支持 Windows x64 桌面版 QQ。');
     try {
-      const saved = await request('query', { requestId: params.requestId });
-      if (saved.found) return outcome(saved.state, saved.reason, saved.accountId);
+      const saved = await request('query', params);
+      if (saved.found) {
+        const value = outcome(saved.state, saved.reason, saved.accountId);
+        if (value.state === 'unknown') uncertain.set(params.requestId, value);
+        return value;
+      }
     } catch (error) {
+      if (error.requestRejected) return outcome('failed', error.message);
       const value = outcome('unknown', `无法核对 QQ requestId 的持久化记录，禁止重发：${error.message}`);
       uncertain.set(params.requestId, value);
+      sealed = true;
       return value;
     }
+    if (sealed) return outcome('failed', 'QQ 存在未决提交，已停止后续发送；更换目标或 requestId 不能绕过。');
     if (closed || signal?.aborted) return outcome('failed', 'QQ 提醒发送器已关闭，本次未提交。');
     try {
       const value = await request('send', params);
-      if (value.state === 'unknown') uncertain.set(params.requestId, value);
+      if (value.state === 'unknown') {
+        sealed = true;
+        uncertain.set(params.requestId, value);
+      }
       if (temporaryQQ && value.state === 'submitted') temporaryQQ.submitted = true;
       return value;
     } catch (error) {
       const value = outcome(error.mayHaveSubmitted ? 'unknown' : 'failed', error.mayHaveSubmitted ? UNKNOWN : error.message);
-      if (value.state === 'unknown') uncertain.set(params.requestId, value);
+      if (value.state === 'unknown') {
+        sealed = true;
+        uncertain.set(params.requestId, value);
+      }
       return value;
     }
   }).then((value) => {

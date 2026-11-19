@@ -2,12 +2,16 @@
 
 const MAX_FRAME = 65536;
 const PHONE_UID = 'u_Wcc5rknRRqRO8y5gxMD6sA';
+const PAD_UID = 'u_l7jpPIZxQo0mzJwoEt-SKw';
+const DEVICE_UIDS = Object.freeze({ phone: PHONE_UID, pad: PAD_UID });
 const REGISTRY = Symbol.for('omp.qq.ask.background.1');
 
-// QQ 9.9.37-54395: major.node ChatType.kDataline = 8. wrapper.node's
-// NeedFilterDatalineTopInfo compares PHONE_UID in its explicit "filter phone"
-// branch (RVA 0x15AA243). This is an account-independent built-in device UID.
-// It is not the signed-in user's C2C UID and does not require an online phone.
+// QQ 9.9.37-54395: major.node ChatType.kDataline = 8. In wrapper.node,
+// NeedFilterDatalineTopInfo compares PHONE_UID at RVA 0x15AA243 and PAD_UID
+// at 0x15AA2AA; the matching branches log "filter phone" (0x15AA275) and
+// "filter pad" (0x15AA2DC). The existing online-device readback independently
+// reports these built-in devUid values for clientType 2 and 9 respectively.
+// These account-independent routes do not require nickname/contact lookup.
 module.exports = function start(config) {
   try {
     return connect(config);
@@ -46,7 +50,7 @@ function connect(config) {
   if (registry.active) registry.active.seal('connection_superseded');
   const socket = new net.Socket();
   const connection = {
-    sealed: false, connected: false, exiting: false, boundAccountId: null,
+    sealed: false, connected: false, exiting: false, boundAccountId: null, submissionUncertain: false,
     seal(reason) {
       if (connection.sealed) return;
       connection.sealed = true;
@@ -193,6 +197,7 @@ function connect(config) {
     if (entry.settled) return;
     entry.settled = true;
     entry.result = result(state, reason, entry.accountId);
+    if (state === 'unknown') entry.owner.submissionUncertain = true;
     entry.resolve(entry.result);
   }
 
@@ -200,13 +205,15 @@ function connect(config) {
     const digest = createHash('sha256').update(params.text, 'utf8').digest('hex');
     const prior = registry.requests.get(params.requestId);
     if (prior) {
-      if (prior.accountId !== params.accountId || prior.digest !== digest) {
-        return Promise.resolve(result('failed', 'request_id_payload_mismatch', params.accountId));
+      // Registry entries retained from the phone-only bridge bind to phone.
+      const target = Object.prototype.hasOwnProperty.call(prior, 'target') ? prior.target : 'phone';
+      if (prior.accountId !== params.accountId || prior.digest !== digest || target !== params.target) {
+        return Promise.resolve(result('failed', 'request_id_identity_mismatch', params.accountId));
       }
       return prior.promise;
     }
     const entry = {
-      owner: connection, accountId: params.accountId, digest, entered: false, settled: false,
+      owner: connection, accountId: params.accountId, target: params.target, digest, entered: false, settled: false,
       result: null, resolve: null, promise: null,
     };
     entry.promise = new Promise((resolve) => { entry.resolve = resolve; });
@@ -214,6 +221,7 @@ function connect(config) {
     void (async () => {
       try {
         if (!live() || connection.exiting) return settle(entry, 'failed', 'connection_sealed');
+        if (connection.submissionUncertain) return settle(entry, 'failed', 'native_submission_unresolved');
         if (!connection.boundAccountId || connection.boundAccountId !== params.accountId) {
           return settle(entry, 'failed', 'inspected_account_required');
         }
@@ -228,12 +236,25 @@ function connect(config) {
           elementType: 1, elementId: '',
           textElement: { content: params.text, atType: 0, atUid: '', atTinyId: '', atNtUid: '' },
         }];
-        const peer = { chatType: 8, peerUid: PHONE_UID, guildId: '' };
-        const attributes = new Map();
+        const peer = { chatType: 8, peerUid: DEVICE_UIDS[params.target], guildId: '' };
+        // Both device routes use the desktop composer's normal attribute record.
+        // Keep neutral styling; account-specific decoration IDs are not routing data.
+        const attributes = new Map([[0, {
+          attrType: 0,
+          attrId: '0',
+          vasMsgInfo: {
+            avatarPendantInfo: { avatarId: 0, pendantId: '0', pendantDiyInfoId: 0 },
+            iceBreakInfo: {},
+            msgNamePlateInfo: { carouselNamePlateIds: [] },
+            vasFont: { fontId: 0, diyFontCfgUpdateTime: 0, magicFontType: 0 },
+            bubbleInfo: { bubbleId: 0 },
+          },
+        }]]);
         if (!bindingIsCurrent(current)) return settle(entry, 'failed', 'session_account_changed_before_submission');
         // No await, callback, or queued work may separate the final generation /
         // original-host-HANDLE check from entry into the irreversible native API.
         if (!live() || connection.exiting || entry.settled) return settle(entry, 'failed', 'connection_sealed');
+        if (connection.submissionUncertain) return settle(entry, 'failed', 'native_submission_unresolved');
         entry.entered = true;
         const reply = await timeout(Promise.resolve(current.service.sendMsg('0', peer, elements, attributes)), 5000);
         if (entry.settled) return;
@@ -299,10 +320,11 @@ function connect(config) {
   }
 
   function validSend(params) {
-    return keysAre(params, ['requestId', 'text', 'accountId']) &&
-      typeof params.requestId === 'string' && /^[0-9a-f]{32}$/.test(params.requestId) &&
+    return keysAre(params, ['requestId', 'target', 'text', 'accountId']) &&
+      typeof params.requestId === 'string' && /^(?!0{32}$)[0-9a-f]{32}$/.test(params.requestId) &&
+      typeof params.target === 'string' && Object.prototype.hasOwnProperty.call(DEVICE_UIDS, params.target) &&
       typeof params.accountId === 'string' && /^u_[A-Za-z0-9_-]+$/.test(params.accountId) &&
-      typeof params.text === 'string' && params.text.isWellFormed() &&
+      typeof params.text === 'string' && !params.text.includes('\0') && params.text.isWellFormed() &&
       Buffer.byteLength(params.text, 'utf8') >= 1 && Buffer.byteLength(params.text, 'utf8') <= 4094;
   }
 

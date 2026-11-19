@@ -1,19 +1,39 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 const MAX_MESSAGE_BYTES = 4094;
 const identifier = () => randomUUID().replaceAll('-', '');
 const record = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const text = (value) => typeof value === 'string' ? value : null;
 const genericQuestion = '此会话有输入请求，请回 OMP 查看并回答。';
-const returnToOmp = '请回到 OMP 原会话回答；本插件只提醒，不读取 QQ 或微信消息，也不接收消息答复。';
+const returnToOmp = '请回到 OMP 原会话回答；本插件只提醒，不读取 QQ 消息，也不接收消息答复。';
 const abortError = () => Object.assign(new Error('提醒服务已关闭。'), { code: 'REMINDER_CLOSED' });
-const channelLabels = { wechat: '微信', qq: 'QQ' };
-const channelReasons = (channels) => Object.entries(channels)
-  .map(([channel, result]) => `${channelLabels[channel]}：${result.reason ?? result.state}`).join('；');
+const targetLabels = { phone: '手机', pad: 'Pad' };
+
+// OMP reuses its plan approval ID. A new plan message is a new pending item,
+// even when the directory update doesn't show the old card disappearing.
+function requestKey(request) {
+  if (request.kind !== 'plan') return request.id;
+  const messageId = text(request.metadata?.planMessageId);
+  if (messageId) return JSON.stringify([request.id, 'plan-message', messageId]);
+  const plan = text(request.metadata?.planText) || text(request.input?.plan);
+  if (!plan) return request.id;
+  return JSON.stringify([request.id, 'plan-content', createHash('sha256').update(plan).digest('hex')]);
+}
+
+function formatApproval(agent, request) {
+  const action = request.kind === 'plan' ? '计划待审批'
+    : request.kind === 'tool' ? '工具或权限待审批'
+    : request.kind === 'mode' ? '模式切换待确认'
+    : '有事项待确认';
+  const next = request.kind === 'plan' && request.name === 'OmpPlanApproval'
+    ? '请回到 OMP 原会话，选择「批准执行」或「继续规划」。'
+    : '请回到 OMP 原会话查看并处理。';
+  return `【OMP 待你确认】\n会话：${agent.title || '未命名会话'}\n事项：${action}\n\n${next}`;
+}
 
 function secretMarker(value) {
   return record(value) && (value.secret === true || value.isSecret === true
-    || value.type === 'password' || value.inputType === 'password');
+    || value.sensitive === true || value.type === 'password' || value.inputType === 'password');
 }
 
 function questionsOf(request) {
@@ -121,7 +141,8 @@ export class ReminderController {
   #signal;
   #onChange;
   #enabled;
-  #connections = { wechat: null, qq: null };
+  #targetMode;
+  #connection = null;
   #error = null;
   #hostId = null;
   #started = false;
@@ -146,7 +167,9 @@ export class ReminderController {
     this.#store = store;
     this.#signal = signal;
     this.#onChange = onChange;
-    this.#enabled = store.readSettings().enabled;
+    const settings = store.readSettings();
+    this.#enabled = settings.enabled;
+    this.#targetMode = settings.targetMode;
     this.#onAbort = () => { this.close().catch(() => { this.#error = '提醒服务关闭失败。'; }); };
     signal?.addEventListener('abort', this.#onAbort, { once: true });
   }
@@ -155,8 +178,8 @@ export class ReminderController {
     const { lastAttempt } = this.#store.readSettings();
     return {
       enabled: this.#enabled,
-      connections: Object.fromEntries(Object.entries(this.#connections)
-        .map(([channel, connection]) => [channel, connection ? { ...connection } : null])),
+      targetMode: this.#targetMode,
+      connection: this.#connection ? { ...this.#connection } : null,
       lastAttempt,
       pendingCount: this.#store.countCurrent(this.#hostId),
       error: this.#error,
@@ -202,7 +225,7 @@ export class ReminderController {
       this.#unsubscribe?.();
       this.#unsubscribe = null;
       this.#started = false;
-      if (!this.#closed) this.#error = '无法读取 OMP 待回答会话。';
+      if (!this.#closed) this.#error = '无法读取 OMP 待处理会话。';
       throw error;
     } finally {
       this.#initializing = false;
@@ -214,12 +237,19 @@ export class ReminderController {
     return this.read();
   }
 
-  setEnabled(enabled) {
-    if (typeof enabled !== 'boolean') throw new TypeError('enabled 必须是布尔值。');
+  configure(settings) {
+    if (!record(settings) || Object.keys(settings).length === 0
+        || Object.keys(settings).some(key => !['enabled', 'targetMode'].includes(key))
+        || ('enabled' in settings && typeof settings.enabled !== 'boolean')
+        || ('targetMode' in settings && !['phone', 'pad', 'both'].includes(settings.targetMode))) {
+      throw new TypeError('提醒设置必须包含有效的 enabled 或 targetMode。');
+    }
     if (this.#closed || !this.#started || this.#signal?.aborted) throw new Error('提醒服务当前未启用。');
-    this.#store.setEnabled(enabled);
-    this.#enabled = enabled;
-    if (!enabled) {
+    this.#store.configure(settings);
+    const saved = this.#store.readSettings();
+    this.#enabled = saved.enabled;
+    this.#targetMode = saved.targetMode;
+    if (!this.#enabled) {
       this.#store.cancelQueued('提醒已停用；旧提醒不补发。');
       this.#delivery?.abort.abort();
       this.#settleTests();
@@ -270,8 +300,7 @@ export class ReminderController {
     if (this.#initializing) this.#seenAgents.add(agent.id);
     if (agent.archivedAt) { this.#remove(agent.id); return; }
     this.#locations.set(agent.id, { workspaceName: project?.workspaceName ?? null });
-    const ids = agent.pendingPermissions.filter((request) => request.kind === 'question').map((request) => request.id);
-    this.#store.syncAgent(this.#hostId, agent.id, agent.title ?? null, ids, this.#enabled);
+    this.#store.syncAgent(this.#hostId, agent.id, agent.title ?? null, agent.pendingPermissions.map(requestKey), this.#enabled);
     this.#stopCancelledDelivery();
   }
 
@@ -335,22 +364,22 @@ export class ReminderController {
   }
 
   async #finishBatch() {
-    let connections;
+    let connection;
     try {
-      connections = await this.#await(this.#sender.finishBatch({
+      connection = await this.#await(this.#sender.finishBatch({
         mayClose: () => !this.#closed && !this.#signal?.aborted && this.#enabled && !this.#fatal
           && !this.#delivery && !this.#store.nextQueued(this.#hostId)
-          && !this.#incompleteQQ.has(this.#connections.qq?.accountId),
+          && !this.#incompleteQQ.has(this.#connection?.accountId),
       }));
     } catch {
       if (this.#closed) return;
-      connections = { qq: {
-        ...this.#connections.qq, state: 'error',
+      connection = {
+        ...this.#connection, state: 'error',
         reason: '临时 QQ 退出失败；已提交的提醒不受影响，请核对后手动退出 QQ。',
-      } };
+      };
     }
     if (this.#closed) return;
-    Object.assign(this.#connections, connections);
+    if (connection !== null) this.#connection = connection;
     this.#publish();
   }
 
@@ -367,12 +396,12 @@ export class ReminderController {
     try { result = await this.#await(this.#omp.agents.ref(row.agent_id).refresh()); }
     catch (error) {
       if (this.#closed) throw error;
-      return { error: '无法重新确认 OMP 问题仍在等待回答；已跳过，不自动重试。' };
+      return { error: '无法重新确认 OMP 事项仍待处理；已跳过，不自动重试。' };
     }
     if (!this.#canSend(row)) return null;
     const agent = result?.agent;
     const request = agent && !agent.archivedAt
-      ? agent.pendingPermissions.find((item) => item.kind === 'question' && item.id === row.request_id) : null;
+      ? agent.pendingPermissions.find((item) => requestKey(item) === row.request_id) : null;
     if (!request) {
       this.#store.cancel(row.lifecycle);
       return null;
@@ -385,59 +414,50 @@ export class ReminderController {
     const abort = new AbortController();
     this.#delivery = { row, abort };
     let agentTitle = row.agent_title ?? null;
-    const channels = {};
+    const routes = row.target_mode === 'both' ? ['phone', 'pad'] : [row.target_mode];
+    const targets = Object.fromEntries(routes.map(target => [target, { state: 'skipped', reason: null }]));
     const submitted = new Map();
-    let routes = [];
     let totalParts = 0;
     const finish = (state, reason = null) => {
-      if (routes.includes('qq') && (submitted.get('qq') ?? 0) < totalParts
-          && ((submitted.get('qq') ?? 0) > 0 || ['failed', 'unknown', 'partial'].includes(channels.qq?.state))) {
-        this.#incompleteQQ.add(this.#connections.qq.accountId);
+      if (totalParts > 0 && routes.some(target => (submitted.get(target) ?? 0) < totalParts)
+          && routes.some(target => (submitted.get(target) ?? 0) > 0
+            || ['failed', 'unknown', 'partial'].includes(targets[target].state))) {
+        this.#incompleteQQ.add(this.#connection?.accountId);
       }
-      this.#store.finish(row.lifecycle, { state, reason, agentTitle, channels });
+      this.#store.finish(row.lifecycle, { state, reason, agentTitle, targets });
       this.#publish();
     };
     const finishStopped = (reason) => {
-      for (const channel of routes) {
-        if ((submitted.get(channel) ?? 0) < totalParts
-            && !['unknown', 'failed', 'not_logged_in', 'unsupported', 'multiple_accounts'].includes(channels[channel].state)) {
-          channels[channel] = { state: submitted.get(channel) > 0 ? 'partial' : 'skipped', reason };
+      for (const target of routes) {
+        if ((submitted.get(target) ?? 0) < totalParts
+            && !['unknown', 'failed', 'unsupported'].includes(targets[target].state)) {
+          targets[target] = { state: submitted.get(target) > 0 ? 'partial' : 'skipped', reason };
         }
       }
-      finish([...submitted.values()].some((count) => count > 0) ? 'partial' : 'skipped', reason);
+      finish([...submitted.values()].some(count => count > 0) ? 'partial' : 'skipped', reason);
     };
     try {
-      let prepared;
       try {
-        prepared = await this.#await(this.#sender.prepare({
+        const prepared = await this.#await(this.#sender.prepare({
           signal: abort.signal, maySend: () => this.#canSend(row),
         }), abort.signal);
+        this.#connection = prepared.connection;
       } catch {
         if (this.#closed) return;
-        if (!this.#canSend(row)) {
-          finish('skipped', '提醒已停止或 OMP 问题已解决；未提交任何提醒。');
-          return;
-        }
-        const reason = '无法检查提醒通道登录状态。';
-        prepared = {
-          connections: Object.fromEntries(['wechat', 'qq'].map((channel) => [channel, {
-            state: 'error', reason, accountId: null, version: null,
-          }])),
-          routes: [],
+        this.#connection = {
+          state: 'error', reason: '无法检查 QQ 登录状态。', accountId: null, version: null,
         };
       }
       if (this.#closed) return;
-      this.#connections = prepared.connections;
-      for (const [channel, connection] of Object.entries(prepared.connections)) {
-        channels[channel] = { state: connection.state === 'ready' ? 'skipped' : connection.state, reason: connection.reason };
-      }
       if (!this.#canSend(row)) {
-        finish('skipped', '提醒已停止或 OMP 问题已解决；未提交任何提醒。');
+        finish('skipped', '提醒已停止或 OMP 事项已处理；未提交任何提醒。');
         return;
       }
-      routes = prepared.routes;
-      if (routes.length === 0) {
-        finish('skipped', channelReasons(channels));
+      if (this.#connection.state !== 'ready') {
+        for (const target of routes) {
+          targets[target] = { state: this.#connection.state, reason: this.#connection.reason };
+        }
+        finish('skipped');
         return;
       }
       let initial = row.type === 'test' ? null : await this.#refresh(row);
@@ -448,61 +468,58 @@ export class ReminderController {
       }
       if (initial) agentTitle = initial.agent.title ?? null;
       const body = row.type === 'test' ? testBody
-        : formatQuestion(initial.agent, this.#locations.get(row.agent_id)?.workspaceName, initial.request);
+        : initial.request.kind === 'question'
+          ? formatQuestion(initial.agent, this.#locations.get(row.agent_id)?.workspaceName, initial.request)
+          : formatApproval(initial.agent, initial.request);
       const parts = splitMessage(body, row.lifecycle);
       totalParts = parts.length;
       initial = null;
       let active = [...routes];
-      for (const [index, part] of parts.entries()) {
-        if (!this.#canSend(row)) {
-          finishStopped('提醒已停止或 OMP 问题已解决；剩余分段不再发送。');
-          return;
-        }
-        if (index > 0 && row.type !== 'test') {
-          const current = await this.#refresh(row);
-          if (!current || current.error || !this.#canSend(row)) {
-            finishStopped(current?.error ?? 'OMP 问题已解决；剩余分段不再发送。');
+      let recheck = false;
+      for (const part of parts) {
+        const continuing = [];
+        for (const target of active) {
+          if (!this.#canSend(row)) {
+            finishStopped('提醒已停止或 OMP 事项已处理；剩余提醒不再发送。');
             return;
           }
-        }
-        const requestId = identifier();
-        for (const channel of active) {
-          channels[channel] = { state: 'unknown', reason: '客户端提交结果尚未确认，不自动重试。' };
-        }
-        // One FULL-synchronous commit fences both independent sender logs before either call.
-        this.#store.markUnknown(row.lifecycle, requestId, { agentTitle, channels });
-        this.#publish();
-        if (!this.#canSend(row)) {
-          for (const channel of active) channels[channel] = { state: 'skipped', reason: '提醒已停止；本段未提交客户端。' };
-          finishStopped('提醒已停止；本段未提交客户端。');
-          return;
-        }
-        const results = await Promise.all(active.map(async (channel) => {
-          if (!this.#canSend(row)) return { state: 'skipped', reason: '提醒已停止；本段未提交客户端。' };
-          try { return await this.#await(this.#sender.send({ channel, requestId, text: part })); }
-          catch { return { state: 'unknown', reason: `${channelLabels[channel]}提交结果未知；此通道不自动重试。` }; }
-        }));
-        if (this.#closed) return;
-        const continuing = [];
-        for (const [position, channel] of active.entries()) {
-          const result = results[position];
-          channels[channel] = { state: result.state, reason: result.reason ?? null };
+          if (recheck && row.type !== 'test') {
+            const current = await this.#refresh(row);
+            if (!current || current.error) {
+              finishStopped(current?.error ?? 'OMP 事项已处理；剩余提醒不再发送。');
+              return;
+            }
+          }
+          recheck = true;
+          const requestId = identifier();
+          targets[target] = { state: 'unknown', reason: 'QQ 提交结果尚未确认，不自动重试。' };
+          // Each destination/segment has an independent durable fence and request ID.
+          this.#store.markUnknown(row.lifecycle, requestId, { agentTitle, targets });
+          this.#publish();
+          if (!this.#canSend(row)) {
+            targets[target] = { state: 'skipped', reason: '提醒已停止；本段未提交 QQ。' };
+            finishStopped('提醒已停止；本段未提交 QQ。');
+            return;
+          }
+          let result;
+          try { result = await this.#await(this.#sender.send({ target, requestId, text: part })); }
+          catch { result = { state: 'unknown', reason: `${targetLabels[target]}提交结果未知，不自动重试。` }; }
+          if (this.#closed) return;
+          targets[target] = { state: result.state, reason: result.reason ?? null };
           if (result.state === 'submitted') {
-            submitted.set(channel, (submitted.get(channel) ?? 0) + 1);
-            continuing.push(channel);
+            submitted.set(target, (submitted.get(target) ?? 0) + 1);
+            continuing.push(target);
           }
         }
         active = continuing;
         if (active.length === 0) break;
       }
-      if (routes.every((channel) => submitted.get(channel) === totalParts)) {
+      if (routes.every(target => submitted.get(target) === totalParts)) {
         finish('submitted');
       } else {
-        const incomplete = Object.fromEntries(routes.filter((channel) => submitted.get(channel) !== totalParts)
-          .map((channel) => [channel, channels[channel]]));
-        const anySubmitted = [...submitted.values()].some((count) => count > 0);
-        const anyUnknown = Object.values(incomplete).some((result) => result.state === 'unknown');
-        finish(anySubmitted ? 'partial' : anyUnknown ? 'unknown' : 'failed', channelReasons(incomplete));
+        const anySubmitted = [...submitted.values()].some(count => count > 0);
+        const anyUnknown = routes.some(target => targets[target].state === 'unknown');
+        finish(anySubmitted ? 'partial' : anyUnknown ? 'unknown' : 'failed');
       }
     } finally {
       this.#delivery = null;

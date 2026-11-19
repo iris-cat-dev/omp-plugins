@@ -53,7 +53,7 @@ async function checkPython(executable, { dependencies = false, venv = false } = 
 }
 
 async function main() {
-  if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('QQ 与微信提醒运行时仅支持 Windows x64。');
+  if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('QQ 提醒运行时仅支持 Windows x64。');
   const args = process.argv.slice(2);
   if (args.length !== 0 && (args.length !== 2 || args[0] !== '--python')) {
     throw new Error('只接受可选参数 --python <Python.exe 的绝对路径>。');
@@ -62,17 +62,17 @@ async function main() {
   if (basePython && (!path.isAbsolute(basePython) || !existsSync(basePython))) {
     throw new Error('--python 必须指向已存在的 Python.exe 绝对路径；请选择 Windows x64 版，推荐 Python 3.13.17（最低支持 3.11）。');
   }
-  const override = process.env.OMP_WECHAT_NOTIFIER_PYTHON;
+  const override = process.env.OMP_QQ_NOTIFIER_PYTHON;
   if (override) {
-    if (!path.isAbsolute(override) || !existsSync(override)) throw new Error('OMP_WECHAT_NOTIFIER_PYTHON 必须是已存在的 Python.exe 绝对路径。');
+    if (!path.isAbsolute(override) || !existsSync(override)) throw new Error('OMP_QQ_NOTIFIER_PYTHON 必须是已存在的 Python.exe 绝对路径。');
     await checkPython(override, { dependencies: true });
-    console.log('提醒运行时已就绪（使用明确指定的独立 Python）。未连接微信或 QQ。');
+    console.log('提醒运行时已就绪（使用明确指定的独立 Python）。未连接 QQ。');
     return;
   }
   if (existsSync(portable)) {
     try { await checkPython(portable, { dependencies: true }); }
-    catch (error) { throw new Error(`${error.message}\n请重新解压含 runtime 文件夹的完整 QQ 与微信提醒分发包。不会改动系统 Python。`); }
-    console.log('提醒自带运行时已就绪，无需安装 Python。未连接微信或 QQ。');
+    catch (error) { throw new Error(`${error.message}\n请重新解压含 runtime 文件夹的完整 QQ 提醒分发包。不会改动系统 Python。`); }
+    console.log('提醒自带运行时已就绪，无需安装 Python。未连接 QQ。');
     return;
   }
   if (!existsSync(privatePython)) {
@@ -95,10 +95,10 @@ async function main() {
     }
     await checkPython(privatePython, { dependencies: true, venv: true });
   }
-  console.log('QQ 与微信提醒私有运行时已就绪。未连接 QQ 或微信。请在 OMP 插件管理中启用本插件，再到“QQ 与微信询问提醒”设置页开启自动提醒。');
+  console.log('QQ 提醒私有运行时已就绪。未连接 QQ。请在 OMP 插件管理中启用本插件，再到“OMP 询问提醒”设置页开启自动提醒。');
 }
 
 main().catch((error) => {
-  console.error(`准备 QQ 与微信提醒失败：${error.message}`);
+  console.error(`准备 QQ 提醒失败：${error.message}`);
   process.exitCode = 1;
 });

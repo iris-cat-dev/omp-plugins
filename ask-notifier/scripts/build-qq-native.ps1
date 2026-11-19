@@ -15,8 +15,7 @@ $cSources = @(
 $required = @(
     (Join-Path $source 'bootstrap.cpp'),
     (Join-Path $source 'bootstrap_protocol.hpp'),
-    (Join-Path $minHook 'include\MinHook.h'),
-    (Join-Path $minHook 'LICENSE.txt')
+    (Join-Path $minHook 'include\MinHook.h')
 ) + $cSources
 foreach ($path in $required) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
@@ -68,8 +67,7 @@ foreach ($line in $environment) {
 }
 
 # All dependencies are bundled under native/qq; the adjacent robot project and
-# QQ installation are not consulted or modified. Keep minhook/LICENSE.txt when
-# redistributing these sources or the resulting DLL.
+# QQ installation are not consulted or modified.
 Push-Location -LiteralPath $build
 try {
     $cArgs = @('/nologo', '/O2', '/W3', '/MT', '/guard:cf', '/DNOMINMAX',

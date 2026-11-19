@@ -146,7 +146,9 @@ class NativeConnection:
             if not dll.is_file() or not backend.is_file():
                 raise QQGuardError('QQ 自研后台桥文件不完整；请重新准备完整插件', 'unsupported')
             config = {'pipeName': pipe_name, 'hostPid': os.getpid(), 'nonce': nonce}
-            script = ('setImmediate(()=>{try{process.mainModule.require(' + json.dumps(str(backend)) + ')(Object.assign('
+            script = ('setImmediate(()=>{try{const filename=' + json.dumps(str(backend))
+                      + ';const load=process.mainModule.require("node:module").createRequire(filename);'
+                      + 'delete load.cache[load.resolve(filename)];load(filename)(Object.assign('
                       + json.dumps(config) + ',{hostAlive:__ompQQHostAlive}))}catch(e){}})')
             encoded = script.encode('utf-8')
             if len(encoded) > 32767:
@@ -404,12 +406,13 @@ class QQNative:
             raise QQGuardError('QQ 账号或进程已变化，本次未提交')
         return {'connection': self.connection, 'selected': dict(selected)}
 
-    def submit(self, prepared, key, text, before_submit):
+    def submit(self, prepared, key, target, text, before_submit):
         if prepared['connection'] is not self.connection:
             raise QQGuardError('QQ 后台连接代次已变化')
         self.connection._verify()
         before_submit()
-        value = self.connection.request('send', {'requestId': key, 'text': text, 'accountId': prepared['selected']['accountId']})
+        value = self.connection.request('send', {'requestId': key, 'target': target, 'text': text,
+                                                'accountId': prepared['selected']['accountId']})
         if (set(value) != {'state', 'reason', 'accountId'}
                 or value['state'] not in ('submitted', 'failed', 'unknown', 'not_logged_in', 'unsupported', 'multiple_accounts')
                 or not (value['reason'] is None or isinstance(value['reason'], str))

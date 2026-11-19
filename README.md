@@ -7,7 +7,7 @@ Optional folder-installed plugins and source examples for [OMP Desktop](https://
 - `desktop-pet/`: desktop pet, authoring workflow, and bundled Iris assets.
 - `qqbot/`: QQ gateway, account UI, and agent conversations.
 - `schedules/`: scheduled agents, existing-agent heartbeats, run history, and multi-host management.
-- `ask-notifier/`: optional Windows QQ/WeChat reminders for pending agent questions, using native self-device sends without mouse or keyboard automation.
+- `ask-notifier/`: optional Windows QQ reminders for questions, plan reviews, and other decisions awaiting your input, with phone, Pad, or both-device delivery.
 - `examples/`: Catppuccin, Linear attachments, and the local counter plugin.
 
 ## Build in a Desktop checkout

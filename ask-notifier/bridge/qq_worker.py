@@ -14,6 +14,14 @@ from qq_native import QQNative, QQGuardError
 MAX_LINE_BYTES = 65536
 REQUEST_ID = re.compile(r'(?!0{32}$)[0-9a-f]{32}\Z')
 SEND_STATES = frozenset(('submitted', 'not_logged_in', 'unsupported', 'multiple_accounts', 'failed', 'unknown'))
+TARGET_IDS = {'phone': 'self_mobile', 'pad': 'self_pad'}
+SCHEMA_VERSION = 2
+SUBMISSIONS_SCHEMA = '''CREATE TABLE submissions (
+    request_id TEXT PRIMARY KEY, payload_sha256 TEXT NOT NULL,
+    target_id TEXT NOT NULL CHECK(target_id IN ('self_mobile','self_pad')), account_id TEXT,
+    state TEXT NOT NULL CHECK(state IN
+        ('submitted','not_logged_in','unsupported','multiple_accounts','failed','unknown')),
+    reason TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)'''
 
 
 class RequestError(ValueError):
@@ -29,6 +37,12 @@ def request_id(value):
     if not isinstance(value, str) or REQUEST_ID.fullmatch(value) is None:
         raise RequestError('requestId 必须为非零的 32 位小写十六进制')
     return value
+
+
+def target_id(value):
+    if not isinstance(value, str) or value not in TARGET_IDS:
+        raise RequestError('target 仅允许 phone 或 pad')
+    return TARGET_IDS[value]
 
 
 def text_bytes(value):
@@ -73,13 +87,28 @@ class Worker:
             if db.execute('PRAGMA journal_mode=WAL').fetchone()[0] != 'wal':
                 raise RuntimeError('QQ 发送日志无法启用 WAL')
             db.execute('PRAGMA synchronous=FULL')
-            db.execute('''CREATE TABLE IF NOT EXISTS submissions (
-                request_id TEXT PRIMARY KEY, payload_sha256 TEXT NOT NULL,
-                target_id TEXT NOT NULL CHECK(target_id='self_mobile'), account_id TEXT,
-                state TEXT NOT NULL CHECK(state IN
-                    ('submitted','not_logged_in','unsupported','multiple_accounts','failed','unknown')),
-                reason TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)''')
+            db.execute('BEGIN IMMEDIATE')
+            version = db.execute('PRAGMA user_version').fetchone()[0]
+            if version not in (0, 1, SCHEMA_VERSION):
+                raise RuntimeError('QQ 发送日志版本不受支持，未修改现有记录')
+            exists = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='submissions'").fetchone()
+            if exists is None:
+                db.execute(SUBMISSIONS_SCHEMA)
+            elif version < SCHEMA_VERSION:
+                # DDL and data copy share one transaction: interrupted migration
+                # retains the original table, including every unknown outcome.
+                db.execute('ALTER TABLE submissions RENAME TO submissions_legacy')
+                db.execute(SUBMISSIONS_SCHEMA)
+                db.execute('''INSERT INTO submissions
+                    (request_id,payload_sha256,target_id,account_id,state,reason,created_at)
+                    SELECT request_id,payload_sha256,target_id,account_id,state,reason,created_at
+                    FROM submissions_legacy''')
+                db.execute('DROP TABLE submissions_legacy')
+            db.execute(f'PRAGMA user_version={SCHEMA_VERSION}')
+            db.execute('COMMIT')
         except BaseException:
+            if db.in_transaction:
+                db.execute('ROLLBACK')
             db.close()
             raise
         self.db = db
@@ -104,21 +133,21 @@ class Worker:
     def _result(row):
         return result(row['state'], row['reason'], row['account_id'])
 
-    def _existing(self, key, digest):
+    def _existing(self, key, target, digest):
         row = self._get(key)
-        if row is not None and row['payload_sha256'] != digest:
-            raise RequestError('requestId 已绑定其他内容，禁止重发')
+        if row is not None and (row['target_id'] != target or row['payload_sha256'] != digest):
+            raise RequestError('requestId 已绑定其他目标或内容，禁止重发')
         return row
 
-    def _record(self, key, digest, value):
+    def _record(self, key, target, digest, value):
         with self.transaction():
-            existing = self._existing(key, digest)
+            existing = self._existing(key, target, digest)
             if existing is not None:
                 return self._result(existing), False
             self.db.execute('''INSERT INTO submissions
                 (request_id,payload_sha256,target_id,account_id,state,reason)
-                VALUES (?,?,'self_mobile',?,?,?)''',
-                (key, digest, value['accountId'], value['state'], value['reason']))
+                VALUES (?,?,?,?,?,?)''',
+                (key, digest, target, value['accountId'], value['state'], value['reason']))
         return value, True
 
     def _finish(self, key, value):
@@ -179,8 +208,11 @@ class Worker:
 
 
     def query(self, params):
-        fields(params, 'requestId')
-        row = self._get(request_id(params['requestId']))
+        fields(params, 'requestId', 'target', 'text')
+        key = request_id(params['requestId'])
+        target = target_id(params['target'])
+        digest = hashlib.sha256(text_bytes(params['text'])).hexdigest()
+        row = self._existing(key, target, digest)
         return {'found': False} if row is None else {'found': True, **self._result(row)}
 
     def send(self, params):
@@ -194,25 +226,26 @@ class Worker:
         return value
 
     def _send(self, params):
-        fields(params, 'requestId', 'text')
+        fields(params, 'requestId', 'target', 'text')
         key = request_id(params['requestId'])
+        target = target_id(params['target'])
         digest = hashlib.sha256(text_bytes(params['text'])).hexdigest()
-        existing = self._existing(key, digest)
+        existing = self._existing(key, target, digest)
         if existing is not None:
             return self._result(existing)
         if self.sealed:
-            return self._record(key, digest, result('failed', 'QQ 工作进程存在未决提交，已停止后续发送；旧 requestId 禁止重发'))[0]
+            return self._record(key, target, digest, result('failed', 'QQ 工作进程存在未决提交，已停止后续发送；旧 requestId 禁止重发'))[0]
         connection, selected = self.desktop.inspect()
         if connection['state'] != 'ready':
             state = connection['state'] if connection['state'] in SEND_STATES else 'failed'
-            return self._record(key, digest, result(state, connection['reason'], connection['accountId']))[0]
+            return self._record(key, target, digest, result(state, connection['reason'], connection['accountId']))[0]
         try:
             prepared = self.desktop.prepare(selected)
         except QQGuardError as error:
-            return self._record(key, digest, result(error.state, str(error), connection['accountId']))[0]
+            return self._record(key, target, digest, result(error.state, str(error), connection['accountId']))[0]
         except Exception:
-            return self._record(key, digest, result('failed', 'QQ 提交前后台身份核验失败，本次未提交', connection['accountId']))[0]
-        value, inserted = self._record(key, digest, result('unknown', 'QQ 提交意图已落盘；结果尚未确认，禁止重发', connection['accountId']))
+            return self._record(key, target, digest, result('failed', 'QQ 提交前后台身份核验失败，本次未提交', connection['accountId']))[0]
+        value, inserted = self._record(key, target, digest, result('unknown', 'QQ 提交意图已落盘；结果尚未确认，禁止重发', connection['accountId']))
         if not inserted:
             return value
         submitted = False
@@ -223,7 +256,7 @@ class Worker:
             submitted = True
 
         try:
-            value = self.desktop.submit(prepared, key, params['text'], before_submit)
+            value = self.desktop.submit(prepared, key, params['target'], params['text'], before_submit)
             if not submitted:
                 raise RuntimeError('QQ 提交实现未报告提交边界')
             value = self._finish(key, value)
@@ -301,8 +334,10 @@ def main():
                     raise RequestError('RPC method 无效')
                 respond({'id': rpc_id, 'result': worker.dispatch(envelope['method'], envelope['params'])})
             except Exception as error:
-                respond({'id': rpc_id, 'error': {'message': str(error) if isinstance(error, RequestError)
-                                                else 'QQ 工作进程操作失败；未暴露界面或聊天内容'}})
+                rejected = isinstance(error, RequestError)
+                respond({'id': rpc_id, 'error': {
+                    'code': 'invalid_request' if rejected else 'worker_failure',
+                    'message': str(error) if rejected else 'QQ 工作进程操作失败；未暴露界面或聊天内容'}})
     finally:
         worker.close()
 

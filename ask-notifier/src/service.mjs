@@ -2,7 +2,6 @@ import { mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createWeChatSender } from './wechat-sender.mjs';
 import { createQQSender } from './qq-sender.mjs';
 import { createNotificationTransport } from './notification-transport.mjs';
 import { ReminderController } from './reminder-core.mjs';
@@ -16,7 +15,6 @@ export default async function register(context) {
   mkdirSync(dataDirectory, { recursive: true });
   const store = createReminderStore(path.join(dataDirectory, 'reminders.sqlite'));
   const sender = createNotificationTransport({
-    wechat: createWeChatSender({ packageRoot, dataDirectory, signal: context.signal }),
     qq: createQQSender({ packageRoot, dataDirectory, signal: context.signal }),
     signal: context.signal
   });
@@ -24,12 +22,12 @@ export default async function register(context) {
   const read = () => ({ ...controller.read(), mode: context.mode });
   const active = () => {
     context.signal.throwIfAborted();
-    if (context.mode !== 'active') throw new Error('请先在 OMP 插件管理中启用本插件，再打开 QQ 与微信提醒。');
+    if (context.mode !== 'active') throw new Error('请先在 OMP 插件管理中启用本插件，再打开 QQ 提醒。');
   };
   try {
     if (context.mode === 'active') await controller.start();
     context.handle(status, read);
-    context.handle(configure, async ({ enabled }) => { active(); await controller.setEnabled(enabled); return read(); });
+    context.handle(configure, (settings) => { active(); controller.configure(settings); return read(); });
     context.handle(testReminder, async () => { active(); await controller.test(); return read(); });
   } catch (error) {
     try { await controller.close(); } finally { store.close(); }
