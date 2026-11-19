@@ -1,92 +1,663 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, TextInput, Pressable, ScrollView, Image, Linking } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ScrollView, Text, View } from 'react-native';
 import type { PluginClientContext, PluginHostProps } from '@omp-desktop/plugin';
+import { Bot, CheckCircle2, RefreshCw, RotateCw, Settings2, Shield, SlidersHorizontal, Terminal } from 'lucide-react-native';
 import { z } from 'zod';
 import { status, action, exportAccess, StatusSchema } from './rpc.ts';
-import { StateSchema, ConfigSchema, AccessSchema, listKey, type State } from './state.ts';
+import { StateSchema, ConfigSchema, AccessSchema, type State } from './state.ts';
 import type { PairPurpose } from './shared/pairing-protocol.ts';
 import { prepareDshImport } from './importer.ts';
-import { parseConfigDraft, editSandboxEnabled, editSandboxPath, editSandboxCapability } from './shared/config-draft.ts';
-const connectionLabels = { waiting: '等待连接', connecting: '正在连接', ready: '已连接', failed: '连接失败' } as const;
+import {
+  getPreset,
+  isConfigDraftDirty,
+  parseConfigDraftResult,
+  parseProviderModelSelection,
+} from './shared/config-draft.ts';
+import { useQQPalette } from './ui/palette.ts';
+import {
+  ActionButton,
+  Badge,
+  InlineBanner,
+  PaletteContext,
+  SegmentedControl,
+  StatusPill,
+} from './ui/primitives.tsx';
+import { useHostProviders } from './ui/providers.ts';
+import { ModelAndChatSection } from './ui/model-section.tsx';
+import { AccountSection } from './ui/account-section.tsx';
+import { AccessSection } from './ui/access-section.tsx';
+import { SandboxAndGameSection } from './ui/sandbox-section.tsx';
+import { AdvancedSection, PeerAgentsCard } from './ui/advanced-section.tsx';
+
+type SectionTab = 'model' | 'account' | 'access' | 'sandbox' | 'advanced';
+
+const connectionLabels = {
+  waiting: '等待连接',
+  connecting: '正在连接',
+  ready: '已连接',
+  failed: '连接失败',
+} as const;
+
 export default function setup(ctx: PluginClientContext) {
   const Page = (props: PluginHostProps) => <QQPage context={ctx} {...props} />;
   ctx.addSettingsPage({ id: 'qqbot.settings', title: 'QQ 连接', icon: 'message-circle', Component: Page });
   ctx.addSurface('qqbot', Page);
   ctx.addSidebarItem({ id: 'qqbot', title: 'QQ 连接', icon: 'message-circle', surface: 'qqbot' });
-  ctx.addWorkspacePanel({ id: 'qqbot.peer', title: 'QQ 连接', icon: 'message-circle', context: 'agent', Component: props => <QQPage {...props} context={ctx} filterAgentId={props.agentId} /> });
-  ctx.addCommandCenterItem({ id: 'qqbot.open', title: 'QQ 连接设置', icon: 'message-circle', context: 'global', onSelect: command => command.openSurface('qqbot') });
+  ctx.addWorkspacePanel({
+    id: 'qqbot.peer',
+    title: 'QQ 连接',
+    icon: 'message-circle',
+    context: 'agent',
+    Component: props => <QQPage {...props} context={ctx} filterAgentId={props.agentId} />,
+  });
+  ctx.addCommandCenterItem({
+    id: 'qqbot.open',
+    title: 'QQ 连接设置',
+    icon: 'message-circle',
+    context: 'global',
+    onSelect: command => command.openSurface('qqbot'),
+  });
 }
-function QQPage({ context: ctx, theme, filterAgentId }: PluginHostProps & { context: PluginClientContext; filterAgentId?: string }) {
-  const [snapshot,setSnapshot] = useState<z.infer<typeof StatusSchema> | null>(null);
-  const [state,setState] = useState<State>(() => StateSchema.parse({}));
-  const [error,setError] = useState<string | null>(null);
-  const [connectionError,setConnectionError] = useState<string|null>(null);
-  const [busy,setBusy] = useState(false);
-  const [appId,setAppId] = useState(''); const [secret,setSecret] = useState('');
-  const [configText,setConfigText] = useState('');
-  const [purpose,setPurpose] = useState<PairPurpose>('allow-c2c'); const [entries,setEntries] = useState(''); const [exportText,setExportText] = useState('');
-  const [importDocument,setImportDocument] = useState(''); const [importSecret,setImportSecret] = useState(false);
-  const dirty=useRef({account:false,config:false});
-  const load = useCallback(async (updateDraft = false) => {
-    const stored = await ctx.storage.get(); if (ctx.signal.aborted) return; const parsed = StateSchema.parse(stored.values); setState(parsed);
-    const live = await ctx.rpc(status,{}); if (ctx.signal.aborted) return; setSnapshot(live);setConnectionError(null);
-    if(updateDraft)dirty.current={account:false,config:false};
-    if(!dirty.current.config)setConfigText(JSON.stringify(live.config,null,2));
-    if(!dirty.current.account)setAppId(live.appId);
-  },[ctx]);
-  useEffect(() => { let closed = false; let timer: ReturnType<typeof setTimeout>|undefined; const poll = async () => { try { await load(false); } catch (e) { if (!closed&&!ctx.signal.aborted) setConnectionError(e instanceof Error ? e.message : String(e)); } if (!closed && !ctx.signal.aborted) timer = setTimeout(poll,2000); }; void load(true).then(() => { if (!closed&&!ctx.signal.aborted) timer = setTimeout(poll,2000); },e => { if (!closed&&!ctx.signal.aborted) { setConnectionError(String(e)); timer = setTimeout(poll,2000); } }); return () => { closed = true; clearTimeout(timer); }; },[ctx,load]);
-  const run = (fn: () => Promise<unknown>) => { if (busy || ctx.signal.aborted) return; setBusy(true); setError(null); void fn().then(() => load(false)).catch(e => { if(!ctx.signal.aborted)setError(e instanceof Error && e.message.includes('CONFLICT') ? '账号或访问权限已被修改。请刷新后重新确认，未覆盖新设置。' : e instanceof Error ? e.message : String(e)); }).finally(() => {if(!ctx.signal.aborted)setBusy(false);}); };
-  const invoke = (value: z.input<typeof action.input>) => run(async () => { const result = await ctx.rpc(action,value); if(!ctx.signal.aborted)setSnapshot(result); });
-  const c = theme.colors;
-  const button = (label: string, onPress: () => void, danger = false) => <Pressable accessibilityRole="button" disabled={busy} onPress={onPress} style={{ paddingHorizontal: 14, paddingVertical: 9, borderRadius: 7, backgroundColor: danger ? c.statusDanger : c.accent, opacity: busy ? 0.5 : 1 }}><Text style={{ color: c.accentForeground, fontWeight: '600' }}>{label}</Text></Pressable>;
-  const inputStyle = { borderWidth: 1, borderColor: c.foregroundMuted, borderRadius: 7, padding: 10, color: c.foreground, backgroundColor: c.surface0 };
-  const peers = (snapshot?.peers ?? Object.values(state.peers)).filter(p => !filterAgentId || p.agentId === filterAgentId);
-  const access = snapshot?.access ?? state.access;
-  const configDraft = parseConfigDraft(configText);
-  const accessEdit = (field: 'c2cMode'|'groupMode'|'commandMode', mode: 'open'|'allowlist'|'disabled') => {
-    const updated = AccessSchema.parse({ ...access,[field]:mode });
-    invoke({kind:'access',access:updated,accessRevision:access.revision});
+
+function QQPage({
+  context: ctx,
+  theme,
+  layout,
+  filterAgentId,
+}: PluginHostProps & { context: PluginClientContext; filterAgentId?: string }) {
+  const palette = useQQPalette(theme);
+  const providers = useHostProviders(ctx);
+
+  const [snapshot, setSnapshot] = useState<z.infer<typeof StatusSchema> | null>(null);
+  const [state, setState] = useState<State>(() => StateSchema.parse({}));
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const [activeTab, setActiveTab] = useState<SectionTab>(filterAgentId ? 'advanced' : 'account');
+  const [jsonOpen, setJsonOpen] = useState(false);
+
+  const [appId, setAppId] = useState('');
+  const [secret, setSecret] = useState('');
+  const [configText, setConfigText] = useState('');
+  const [purpose, setPurpose] = useState<PairPurpose>('allow-c2c');
+  const [entries, setEntries] = useState('');
+  const [exportText, setExportText] = useState('');
+  const [importDocument, setImportDocument] = useState('');
+  const [importSecret, setImportSecret] = useState(false);
+
+  const dirty = useRef({ account: false, config: false });
+  const initialTabResolved = useRef(Boolean(filterAgentId));
+  const userSwitchedTab = useRef(false);
+
+  const load = useCallback(
+    async (updateDraft = false) => {
+      const stored = await ctx.storage.get();
+      if (ctx.signal.aborted) return;
+      const parsed = StateSchema.parse(stored.values);
+      setState(parsed);
+      const live = await ctx.rpc(status, {});
+      if (ctx.signal.aborted) return;
+      setSnapshot(live);
+      setConnectionError(null);
+      if (updateDraft) dirty.current = { account: false, config: false };
+      if (!dirty.current.config) setConfigText(JSON.stringify(live.config, null, 2));
+      if (!dirty.current.account) setAppId(live.appId);
+      if (!initialTabResolved.current) {
+        initialTabResolved.current = true;
+        if (!userSwitchedTab.current) {
+          setActiveTab(live.appId ? 'model' : 'account');
+        }
+      }
+    },
+    [ctx],
+  );
+
+  useEffect(() => {
+    let closed = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const poll = async () => {
+      try {
+        await load(false);
+      } catch (failure) {
+        if (!closed && !ctx.signal.aborted) {
+          setConnectionError(failure instanceof Error ? failure.message : String(failure));
+        }
+      }
+      if (!closed && !ctx.signal.aborted) timer = setTimeout(poll, 2000);
+    };
+    void load(true).then(
+      () => {
+        if (!closed && !ctx.signal.aborted) timer = setTimeout(poll, 2000);
+      },
+      failure => {
+        if (!closed && !ctx.signal.aborted) {
+          setConnectionError(failure instanceof Error ? failure.message : String(failure));
+          timer = setTimeout(poll, 2000);
+        }
+      },
+    );
+    return () => {
+      closed = true;
+      clearTimeout(timer);
+    };
+  }, [ctx, load]);
+
+  useEffect(() => {
+    if (!notice) return;
+    const timer = setTimeout(() => setNotice(null), 3500);
+    return () => clearTimeout(timer);
+  }, [notice]);
+
+  const run = (fn: () => Promise<unknown>, successMessage?: string) => {
+    if (busy || ctx.signal.aborted) return;
+    setBusy(true);
+    setError(null);
+    void fn()
+      .then(() => load(false))
+      .then(() => {
+        if (!ctx.signal.aborted && successMessage) setNotice(successMessage);
+      })
+      .catch(failure => {
+        if (!ctx.signal.aborted) {
+          setError(
+            failure instanceof Error && failure.message.includes('CONFLICT')
+              ? '账号或访问权限已被修改。请刷新后重新确认，未覆盖新设置。'
+              : failure instanceof Error
+                ? failure.message
+                : String(failure),
+          );
+        }
+      })
+      .finally(() => {
+        if (!ctx.signal.aborted) setBusy(false);
+      });
   };
-  const connectionLabel = ctx.mode === 'manage' ? '执行已禁用' : connectionError ? '读取失败' : snapshot ? connectionLabels[snapshot.connection] : '正在读取';
-  return <ScrollView contentContainerStyle={{ padding: 20, gap: 20, maxWidth: 920 }} style={{ backgroundColor: c.surface0 }}>
-    <View style={{ gap: 8 }}>
-      <Text style={{fontSize:24,fontWeight:'700',color:c.foreground}}>QQ 连接</Text>
-      <View style={{flexDirection:'row',alignItems:'center',flexWrap:'wrap',gap:12}}>
-        <Text testID="qqbot-connection-status" style={{color:connectionError||snapshot?.connection==='failed'?c.statusDanger:c.foregroundMuted}}>连接状态：{connectionLabel}</Text>
-        {ctx.mode==='active'?button('重启 QQ 连接',() => invoke({kind:'restart'})):null}
-      </View>
-      {ctx.mode==='manage'?<Text style={{color:c.foregroundMuted}}>可配置账号与访问权限。扫码轮询只在 daemon 执行。</Text>:snapshot?.reason?<Text style={{color:snapshot.connection==='failed'?c.statusDanger:c.foregroundMuted}}>{snapshot.reason}</Text>:null}
-    </View>
-    {error||connectionError ? <Text accessibilityRole="alert" style={{color:c.statusDanger}}>{error??connectionError}</Text> : null}
-    <View style={{gap:10}}><Text style={{fontSize:18,fontWeight:'600',color:c.foreground}}>机器人账号</Text><Text style={{color:c.foregroundMuted}}>当前 AppID：{snapshot?.appId||'未绑定'}</Text><TextInput accessibilityLabel="QQ AppID" placeholder="AppID" value={appId} onChangeText={value=>{dirty.current.account=true;setAppId(value);}} style={inputStyle}/><TextInput accessibilityLabel="QQ AppSecret" placeholder={snapshot?.secretConfigured ? 'AppSecret 已保存；输入新值可替换' : 'AppSecret（仅写入 daemon secret 存储）'} value={secret} onChangeText={setSecret} secureTextEntry autoCapitalize="none" style={inputStyle}/>
-    <View style={{flexDirection:'row',gap:8,flexWrap:'wrap'}}>{button('保存／替换账号',() => run(async () => { if (!appId.trim()) throw new Error('请填写 AppID'); const credentialKey=secret?`credential-draft:${crypto.randomUUID()}`:undefined; try { if (credentialKey) { await ctx.secrets.set(credentialKey,secret); setSecret(''); } await ctx.rpc(action,{kind:'replace',appId:appId.trim(),credentialKey,accessRevision:access.revision});dirty.current.account=false; } finally { if(credentialKey) await ctx.secrets.delete(credentialKey); } }))}{button('扫码绑定',() => invoke({kind:'bind'}))}{button('刷新二维码',() => invoke({kind:'refresh'}))}{button('解绑',() => invoke({kind:'unbind',accessRevision:access.revision}),true)}{button('刷新状态',() => run(() => load(true)))}</View>
-    {snapshot?.binding.qrSvg ? <Image accessibilityLabel="QQ 绑定二维码" source={{uri:snapshot.binding.qrSvg}} style={{width:220,height:220,backgroundColor:'#fff'}}/> : null}
-    {snapshot?.binding.url ? button('打开绑定链接',() => { void Linking.openURL(snapshot.binding.url!); }) : null}
-    {snapshot?.binding.phase === 'failed' ? <Text style={{color:c.statusDanger}}>{snapshot.binding.reason}</Text> : null}</View>
-    <View style={{gap:12}}><Text style={{fontSize:18,fontWeight:'600',color:c.foreground}}>访问权限</Text>{([['私聊','c2cMode'],['群聊','groupMode'],['机器人管理命令（按身份）','commandMode']] as const).map(([title,field]) => <View key={field} style={{gap:6}}><Text style={{color:c.foreground}}>{title} · {access[field]}</Text><View style={{flexDirection:'row',gap:8}}>{(['open','allowlist','disabled'] as const).map((mode,i) => <React.Fragment key={mode}>{button(['所有人','仅名单','关闭'][i]!,() => accessEdit(field,mode))}</React.Fragment>)}</View></View>)}
-    <View style={{flexDirection:'row',gap:8,flexWrap:'wrap'}}>{(['allow-c2c','allow-group','owner'] as const).map((p,i) => <React.Fragment key={p}>{button(['私聊名单','群名单','管理员名单'][i]!,() => setPurpose(p))}</React.Fragment>)}</View><Text style={{color:c.foreground}}>当前：{purpose} · 访问修订 {access.revision}</Text>
-    {access[listKey(purpose)].map(member => <View key={JSON.stringify([member.scene,member.groupOpenid,member.openid])} style={{gap:5}}><Text selectable style={{color:c.foreground}}>{member.nickname || member.sceneName || '未命名'} · {member.scene}{member.groupOpenid?` · 群 ${member.groupOpenid}`:''} · {member.openid}</Text><View style={{flexDirection:'row',gap:8}}>{button('撤销',() => invoke({kind:'revoke',purpose,openid:member.openid,accessRevision:access.revision}),true)}</View></View>)}
-    <TextInput accessibilityLabel="OpenID 与昵称名单" multiline placeholder="每行 OpenID:昵称" value={entries} onChangeText={setEntries} style={inputStyle}/><View style={{flexDirection:'row',gap:8,flexWrap:'wrap'}}>{button('添加／修改昵称',() => invoke({kind:'manual',purpose,text:entries,accessRevision:access.revision}))}{ctx.mode==='active'?button('生成配对码',() => invoke({kind:'pair',purpose,accessRevision:access.revision})):null}{button('导出名单',() => run(async()=>{const result=await ctx.rpc(exportAccess,{purpose,accessRevision:access.revision});if(!ctx.signal.aborted)setExportText(result.text);} ))}</View>{ctx.mode==='manage'?<Text style={{color:c.foregroundMuted}}>启用 QQ 网关后可以生成配对码；禁用时仍可手动维护和导出名单。</Text>:null}
-    {purpose==='owner'?<Text style={{color:c.foregroundMuted}}>管理员审批只接受本名单的精确身份；群内配对绑定本群 member_openid，不能用昵称或私聊身份替代。机器人管理命令名单不限制普通玩家的游戏操作。</Text>:null}
-    {snapshot?.challenges.filter(ch => ch.purpose === purpose).map(ch => <View key={ch.code} style={{gap:5}}><Text selectable style={{color:c.foreground,fontSize:20,fontWeight:'600'}}>{ch.code}</Text><Text style={{color:c.foregroundMuted}}>在目标 QQ 对话内发送；{new Date(ch.expiresAt).toLocaleTimeString()} 过期 · 已认领 {ch.claims.length}</Text>{button('结束配对',() => invoke({kind:'end-pair',code:ch.code}))}</View>)}{exportText ? <TextInput accessibilityLabel="导出的名单" multiline editable={false} value={exportText} style={inputStyle}/> : null}</View>
-    <View style={{gap:10}}>
-      <Text style={{fontSize:18,fontWeight:'600',color:c.foreground}}>QQ 沙箱</Text>
-      {configDraft ? <Pressable testID="qqbot-sandbox-toggle" accessibilityRole="switch" accessibilityLabel="QQ 沙箱" accessibilityState={{checked:configDraft.sandboxEnabled,disabled:busy}} aria-checked={configDraft.sandboxEnabled} disabled={busy} onPress={()=>{dirty.current.config=true;setConfigText(editSandboxEnabled(configText,!configDraft.sandboxEnabled));}} style={{alignSelf:'flex-start',paddingHorizontal:14,paddingVertical:9,borderRadius:7,backgroundColor:configDraft.sandboxEnabled?c.accent:c.statusDanger,opacity:busy?0.5:1}}><Text style={{color:c.accentForeground,fontWeight:'600'}}>沙箱：{configDraft.sandboxEnabled?'开启（默认）':'关闭'}</Text></Pressable> : null}
-      <Text style={{color:c.foregroundMuted}}>开启时，agent 默认仅能读写专用目录；系统命令、系统身份、其他宿主工具与 skill 禁用。切换沙箱或修改目录与能力后，点击下方「保存配置」生效；旧 agent 停止，Desktop 历史保留。</Text>
-      <Text style={{color:configDraft?.sandboxEnabled===false?c.statusDanger:c.foregroundMuted}}>关闭后，获准 QQ 用户可让普通宿主 agent 使用系统命令、文件和其他正常工具，可能访问目录外数据。仍使用 ask 模式，权限不会自动批准；建议先将私聊与群聊限制为名单。QQ 附件与文件投递始终使用专用目录隔离；安全文件系统不可用时媒体处理明确失败，文本连接不受影响。</Text>
-      <TextInput accessibilityLabel="QQ 沙箱路径" placeholder="留空使用此安装实例的专用私有目录" value={configDraft?.sandboxPath ?? ''} editable={!!configDraft&&!busy} autoCapitalize="none" onChangeText={value=>{dirty.current.config=true;setConfigText(editSandboxPath(configText,value));}} style={inputStyle}/>
-      <Text style={{color:c.foregroundMuted}}>支持绝对路径或 ~/路径；不能使用用户主目录、文件系统根目录或符号链接。路径与能力开关使用下方同一份 JSON 草稿。</Text>
-      {configDraft ? <View style={{flexDirection:'row',gap:8,flexWrap:'wrap'}}>
-        {button(`JavaScript：${configDraft.sandboxCapabilities.javascript ? '开启' : '关闭'}`,()=>{dirty.current.config=true;setConfigText(editSandboxCapability(configText,'javascript',!configDraft.sandboxCapabilities.javascript));})}
-        {button(`公网请求：${configDraft.sandboxCapabilities.network ? '开启' : '关闭'}`,()=>{dirty.current.config=true;setConfigText(editSandboxCapability(configText,'network',!configDraft.sandboxCapabilities.network));})}
-        {button(`主机生图：${configDraft.sandboxCapabilities.imageGeneration ? '开启' : '关闭'}`,()=>{dirty.current.config=true;setConfigText(editSandboxCapability(configText,'imageGeneration',!configDraft.sandboxCapabilities.imageGeneration));})}
-      </View> : <Text style={{color:c.statusDanger}}>请先修正下方配置 JSON，再编辑沙箱开关、路径与能力。</Text>}
-      <Text style={{color:c.foregroundMuted}}>JavaScript 与公网请求开关仅在沙箱开启时限制 agent。开启公网请求后，获准 QQ 用户可将沙箱数据发送到任意公网地址；沙箱仍禁止私网、localhost、云元数据与宿主凭据。</Text>
-      <Text style={{color:c.foregroundMuted}}>主机生图使用 Desktop 已配置的模型与凭据，可能产生费用。沙箱 agent 的成功产物自动发送到当前获准 QQ 对话；游戏绘图始终由独立受限沙箱子会话执行。输入图片与 QQ 投递产物仅限专用目录。</Text>
-    </View>
-    <View style={{gap:10}}><Text style={{fontSize:18,fontWeight:'600',color:c.foreground}}>宿主游戏</Text>{configDraft?button(`宿主游戏：${configDraft.game.enabled?'开启':'关闭'}`,()=>{dirty.current.config=true;setConfigText(JSON.stringify({...configDraft,game:{...configDraft.game,enabled:!configDraft.game.enabled}},null,2));}):null}<Text style={{color:c.foregroundMuted}}>默认从 ~/.omp/qqbot-games 加载受信任独立引擎；可在下方 JSON 用 game.engineDirectory 改为 QQ 沙箱外的绝对路径或 ~/ 路径。默认关闭；存档位置不变。游戏指令、规则与场景由独立引擎提供。切换开关会新建对话，旧历史保留。</Text></View>
-    <View style={{gap:10}}><Text style={{fontSize:18,fontWeight:'600',color:c.foreground}}>对话与具名 preset</Text><Text style={{color:c.foregroundMuted}}>保留模型、thinking 与 prompt 偏好；下一次 /new 或 /reset 生效。mode 固定为 ask，preset 不能绕过顶层沙箱开关或添加 MCP、tools、skills、运行选项及工具预批准；关闭沙箱后使用普通宿主 agent 的工具。sendFile.extraRoots 不扩大 QQ 媒体目录；sendPresentedFiles 默认为 false，仅显式开启后投递专用目录内文件。</Text><TextInput accessibilityLabel="QQ 配置 JSON" multiline value={configText} onChangeText={value=>{dirty.current.config=true;setConfigText(value);}} style={[inputStyle,{minHeight:280,fontFamily:'monospace'}]}/>{button('保存配置',() => run(async () => { const config = ConfigSchema.parse(JSON.parse(configText)); await ctx.rpc(action,{kind:'configure',config,accessRevision:access.revision});dirty.current.config=false; }))}</View>
-    <View style={{gap:7}}><Text style={{fontSize:18,fontWeight:'600',color:c.foreground}}>Desktop peer agents</Text>{peers.map(peer => <Text selectable key={peer.agentId} style={{color:c.foreground}}>{peer.scope} · {peer.openid}\n主机 {peer.hostId} · 工作区 {peer.workspaceId} · agent {peer.agentId} · preset {peer.preset}</Text>)}{peers.length === 0 ? <Text style={{color:c.foregroundMuted}}>首条获准 QQ 消息将在 Desktop 创建可恢复的真实 agent。</Text> : null}</View>
-    <View style={{gap:10}}><Text style={{fontSize:18,fontWeight:'600',color:c.foreground}}>显式导入 DSH QQ 设置</Text><Text style={{color:c.foregroundMuted}}>选择并粘贴旧 cordis.patch.yml、im-qqbot 配置或成员 JSON；也可提交 {'{config, members, preferences, desktopPresets}'} 组合文档。原文件与历史保持原样；无法转换的 Cordis 挂载逐项报告。凭据只通过专用 secret 操作提交。</Text><TextInput accessibilityLabel="DSH QQ 配置 YAML" multiline value={importDocument} onChangeText={setImportDocument} style={[inputStyle,{minHeight:120}]}/>{button(importSecret ? '凭据：一并导入' : '凭据：不导入',() => setImportSecret(v => !v))}{button('导入选择的 DSH 数据',() => run(async()=>{const prepared=prepareDshImport(importDocument);const credentialKey=importSecret&&prepared.secret?`credential-draft:${crypto.randomUUID()}`:undefined;try{if(credentialKey){if(!prepared.appId)throw new Error('所选凭据缺少 AppID');await ctx.secrets.set(credentialKey,prepared.secret!);}await ctx.rpc(action,{kind:'import',source:'dsh-qqbot',document:prepared.document,credentialKey,accessRevision:access.revision});setImportDocument('');}finally{if(credentialKey)await ctx.secrets.delete(credentialKey);}}))}{(snapshot?.importReport ?? state.importReport).map((line,i) => <Text key={i} style={{color:c.foregroundMuted}}>{line}</Text>)}</View>
-  </ScrollView>;
+
+  const invoke = (value: z.input<typeof action.input>, successMessage?: string) =>
+    run(async () => {
+      const result = await ctx.rpc(action, value);
+      if (!ctx.signal.aborted) setSnapshot(result);
+    }, successMessage);
+
+  const selectTab = (next: SectionTab) => {
+    userSwitchedTab.current = true;
+    setActiveTab(next);
+  };
+
+  const updateConfigText = (nextText: string) => {
+    dirty.current.config = true;
+    setError(null);
+    setNotice(null);
+    setConfigText(nextText);
+  };
+
+  const savedConfig = snapshot?.config ?? null;
+  const draftResult = useMemo(() => parseConfigDraftResult(configText), [configText]);
+  const configDraft = draftResult.config;
+  const configError = configText.trim() ? draftResult.error : null;
+  const hasUnsavedConfig = useMemo(
+    () => Boolean(savedConfig && configText.trim() && isConfigDraftDirty(configText, savedConfig)),
+    [configText, savedConfig],
+  );
+
+  const peers = (snapshot?.peers ?? Object.values(state.peers)).filter(
+    peer => !filterAgentId || peer.agentId === filterAgentId,
+  );
+  const access = snapshot?.access ?? state.access;
+
+  const connectionLabel =
+    ctx.mode === 'manage'
+      ? '执行已禁用'
+      : connectionError
+        ? '读取失败'
+        : snapshot
+          ? connectionLabels[snapshot.connection]
+          : '正在读取';
+
+  const connectionTone: 'ready' | 'connecting' | 'waiting' | 'failed' | 'disabled' =
+    ctx.mode === 'manage'
+      ? 'disabled'
+      : connectionError || snapshot?.connection === 'failed'
+        ? 'failed'
+        : snapshot?.connection === 'ready'
+          ? 'ready'
+          : snapshot?.connection === 'connecting'
+            ? 'connecting'
+            : 'waiting';
+
+  const defaultPresetSummary = useMemo(() => {
+    const activeConfig = configDraft ?? savedConfig;
+    if (!activeConfig) return null;
+    const preset = getPreset(activeConfig, activeConfig.defaultPreset);
+    const { provider, model } = parseProviderModelSelection(preset.config.provider);
+    return model ? `${provider}/${model}` : `${provider} 默认`;
+  }, [configDraft, savedConfig]);
+
+  const handleSaveConfig = () => {
+    run(async () => {
+      const config = ConfigSchema.parse(JSON.parse(configText));
+      const result = await ctx.rpc(action, {
+        kind: 'configure',
+        config,
+        accessRevision: access.revision,
+      });
+      if (!ctx.signal.aborted) {
+        dirty.current.config = false;
+        setSnapshot(result);
+        setConfigText(JSON.stringify(result.config, null, 2));
+      }
+    }, '配置已保存');
+  };
+
+  const handleDiscardConfig = () => {
+    if (!savedConfig) return;
+    dirty.current.config = false;
+    setError(null);
+    setConfigText(JSON.stringify(savedConfig, null, 2));
+  };
+
+  const handleSaveAccount = () => {
+    run(async () => {
+      if (!appId.trim()) throw new Error('请填写 AppID');
+      const credentialKey = secret ? `credential-draft:${crypto.randomUUID()}` : undefined;
+      try {
+        if (credentialKey) {
+          await ctx.secrets.set(credentialKey, secret);
+          setSecret('');
+        }
+        const result = await ctx.rpc(action, {
+          kind: 'replace',
+          appId: appId.trim(),
+          credentialKey,
+          accessRevision: access.revision,
+        });
+        if (!ctx.signal.aborted) {
+          dirty.current.account = false;
+          setSnapshot(result);
+        }
+      } finally {
+        if (credentialKey) await ctx.secrets.delete(credentialKey);
+      }
+    }, '账号凭据已更新');
+  };
+
+  const handleAccessMode = (
+    field: 'c2cMode' | 'groupMode' | 'commandMode',
+    modeValue: 'open' | 'allowlist' | 'disabled',
+  ) => {
+    const updated = AccessSchema.parse({ ...access, [field]: modeValue });
+    invoke({ kind: 'access', access: updated, accessRevision: access.revision });
+  };
+
+  const handleImportDsh = () => {
+    run(async () => {
+      const prepared = prepareDshImport(importDocument);
+      const credentialKey =
+        importSecret && prepared.secret ? `credential-draft:${crypto.randomUUID()}` : undefined;
+      try {
+        if (credentialKey) {
+          if (!prepared.appId) throw new Error('所选凭据缺少 AppID');
+          await ctx.secrets.set(credentialKey, prepared.secret!);
+        }
+        const result = await ctx.rpc(action, {
+          kind: 'import',
+          source: 'dsh-qqbot',
+          document: prepared.document,
+          credentialKey,
+          accessRevision: access.revision,
+        });
+        if (!ctx.signal.aborted) {
+          dirty.current.config = false;
+          dirty.current.account = false;
+          setImportDocument('');
+          setSnapshot(result);
+          setConfigText(JSON.stringify(result.config, null, 2));
+          setAppId(result.appId);
+        }
+      } finally {
+        if (credentialKey) await ctx.secrets.delete(credentialKey);
+      }
+    }, 'DSH 数据已导入');
+  };
+
+  const jumpToJson = () => {
+    setJsonOpen(true);
+    selectTab('advanced');
+  };
+
+  return (
+    <PaletteContext.Provider value={palette}>
+      <ScrollView
+        style={{ flex: 1, backgroundColor: palette.surface0 }}
+        contentContainerStyle={{
+          padding: layout.compact ? 14 : 20,
+          gap: 16,
+          maxWidth: 920,
+          width: '100%',
+          alignSelf: 'center',
+        }}
+        keyboardShouldPersistTaps="handled"
+      >
+        {/* Top Overview & Connection Header */}
+        <View
+          style={{
+            padding: 16,
+            borderRadius: 12,
+            backgroundColor: palette.surface1,
+            borderWidth: 1,
+            borderColor: palette.border,
+            gap: 12,
+          }}
+        >
+          <View
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              flexWrap: 'wrap',
+              gap: 12,
+            }}
+          >
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <View
+                style={{
+                  width: 34,
+                  height: 34,
+                  borderRadius: 9,
+                  backgroundColor: palette.surface2,
+                  borderWidth: 1,
+                  borderColor: palette.border,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <Bot size={18} color={palette.accent} />
+              </View>
+              <Text style={{ fontSize: 18, fontWeight: '700', color: palette.foreground }}>QQ 连接</Text>
+              <StatusPill
+                testID="qqbot-connection-status"
+                label={`连接状态：${connectionLabel}`}
+                tone={connectionTone}
+              />
+            </View>
+
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <ActionButton
+                icon={RefreshCw}
+                label="刷新状态"
+                variant="outline"
+                size="sm"
+                disabled={busy}
+                onPress={() => run(() => load(true))}
+                testID="qqbot-refresh-status"
+              />
+              {ctx.mode === 'active' ? (
+                <ActionButton
+                  icon={RotateCw}
+                  label="重启 QQ 连接"
+                  variant="secondary"
+                  size="sm"
+                  disabled={busy}
+                  onPress={() => invoke({ kind: 'restart' }, '已触发重启 QQ 连接')}
+                  testID="qqbot-restart"
+                />
+              ) : null}
+            </View>
+          </View>
+
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+            {snapshot?.appId ? (
+              <Badge label={`AppID ${snapshot.appId}`} mono />
+            ) : (
+              <Badge label="未绑定账号" tone="warning" />
+            )}
+            {defaultPresetSummary ? <Badge label={`模型 ${defaultPresetSummary}`} mono /> : null}
+            {configDraft ? (
+              <Badge
+                label={configDraft.sandboxEnabled ? '沙箱开启' : '宿主模式'}
+                tone={configDraft.sandboxEnabled ? 'success' : 'danger'}
+              />
+            ) : null}
+          </View>
+
+          {ctx.mode === 'active' && snapshot?.reason ? (
+            <InlineBanner
+              tone={snapshot.connection === 'failed' ? 'danger' : 'info'}
+              message={snapshot.reason}
+            />
+          ) : null}
+        </View>
+
+        {/* Global Error / Notice Banners */}
+        {error || connectionError ? (
+          <InlineBanner tone="danger" role="alert" message={error ?? connectionError ?? ''} />
+        ) : null}
+
+        {notice ? (
+          <View
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 8,
+              paddingHorizontal: 13,
+              paddingVertical: 9,
+              borderRadius: 8,
+              backgroundColor: palette.surface2,
+              borderWidth: 1,
+              borderColor: palette.statusSuccess,
+            }}
+          >
+            <CheckCircle2 size={15} color={palette.statusSuccess} />
+            <Text style={{ fontSize: 13, color: palette.foreground }}>{notice}</Text>
+          </View>
+        ) : null}
+
+        {/* Unsaved Config Action Bar */}
+        {hasUnsavedConfig ? (
+          <View
+            testID="qqbot-unsaved-bar"
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              flexWrap: 'wrap',
+              gap: 10,
+              paddingHorizontal: 14,
+              paddingVertical: 10,
+              borderRadius: 10,
+              backgroundColor: palette.surface1,
+              borderWidth: 1,
+              borderColor: configDraft ? palette.accent : palette.statusDanger,
+            }}
+          >
+            <Text style={{ fontSize: 13, fontWeight: '500', color: configDraft ? palette.foreground : palette.statusDanger }}>
+              {configDraft ? '配置有未保存的更改' : '配置 JSON 格式有误（已保留草稿，请修复后保存）'}
+            </Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              <ActionButton
+                label="放弃修改"
+                variant="ghost"
+                size="sm"
+                disabled={busy}
+                onPress={handleDiscardConfig}
+                testID="qqbot-discard-config"
+              />
+              {configDraft ? (
+                <ActionButton
+                  label="保存配置"
+                  variant="primary"
+                  size="sm"
+                  disabled={busy}
+                  onPress={handleSaveConfig}
+                  testID="qqbot-save-config"
+                />
+              ) : (
+                <ActionButton
+                  label="前往 JSON 修复"
+                  variant="outline"
+                  size="sm"
+                  onPress={jumpToJson}
+                />
+              )}
+            </View>
+          </View>
+        ) : null}
+
+        {/* Focused Agent Panel Card (when opened inside an agent workspace panel) */}
+        {filterAgentId ? (
+          <PeerAgentsCard
+            title="当前 Agent 关联的 QQ 会话"
+            peers={peers}
+            modelSelections={state.modelSelections}
+            presetSelections={state.presetSelections}
+          />
+        ) : null}
+
+        {/* Navigation Tabs */}
+        <SegmentedControl<SectionTab>
+          value={activeTab}
+          onChange={selectTab}
+          fullWidth={!layout.compact}
+          testID="qqbot-tabs"
+          options={[
+            { value: 'model', label: '模型与对话', icon: SlidersHorizontal, testID: 'qqbot-tab-model' },
+            { value: 'account', label: '账号与绑定', icon: Bot, testID: 'qqbot-tab-account' },
+            { value: 'access', label: '访问权限', icon: Shield, testID: 'qqbot-tab-access' },
+            { value: 'sandbox', label: '沙箱与扩展', icon: Terminal, testID: 'qqbot-tab-sandbox' },
+            {
+              value: 'advanced',
+              label: '会话与高级',
+              icon: Settings2,
+              badge: !configDraft && configText.trim() ? '!' : peers.length > 0 ? peers.length : undefined,
+              testID: 'qqbot-tab-advanced',
+            },
+          ]}
+        />
+
+        {/* Active Tab Content */}
+        {activeTab === 'model' ? (
+          <ModelAndChatSection
+            configDraft={configDraft}
+            configText={configText}
+            busy={busy}
+            compact={layout.compact}
+            providers={providers}
+            onUpdateConfigText={updateConfigText}
+            onReportError={setError}
+            onJumpToJson={jumpToJson}
+          />
+        ) : null}
+
+        {activeTab === 'account' ? (
+          <AccountSection
+            mode={ctx.mode}
+            snapshot={snapshot}
+            appId={appId}
+            secret={secret}
+            busy={busy}
+            onChangeAppId={value => {
+              dirty.current.account = true;
+              setAppId(value);
+            }}
+            onChangeSecret={setSecret}
+            onSaveAccount={handleSaveAccount}
+            onBind={() => invoke({ kind: 'bind' })}
+            onRefreshQr={() => invoke({ kind: 'refresh' })}
+            onUnbind={() => invoke({ kind: 'unbind', accessRevision: access.revision }, '已解绑账号')}
+          />
+        ) : null}
+
+        {activeTab === 'access' ? (
+          <AccessSection
+            mode={ctx.mode}
+            access={access}
+            challenges={snapshot?.challenges ?? []}
+            busy={busy}
+            compact={layout.compact}
+            purpose={purpose}
+            entries={entries}
+            exportText={exportText}
+            onChangePurpose={setPurpose}
+            onChangeEntries={setEntries}
+            onClearExport={() => setExportText('')}
+            onChangeAccessMode={handleAccessMode}
+            onManualAdd={() =>
+              run(async () => {
+                const result = await ctx.rpc(action, {
+                  kind: 'manual',
+                  purpose,
+                  text: entries,
+                  accessRevision: access.revision,
+                });
+                if (!ctx.signal.aborted) {
+                  setSnapshot(result);
+                  setEntries('');
+                }
+              }, '名单已更新')
+            }
+            onIssuePair={() => invoke({ kind: 'pair', purpose, accessRevision: access.revision })}
+            onEndPair={code => invoke({ kind: 'end-pair', code })}
+            onExportList={() =>
+              run(async () => {
+                const result = await ctx.rpc(exportAccess, {
+                  purpose,
+                  accessRevision: access.revision,
+                });
+                if (!ctx.signal.aborted) setExportText(result.text);
+              })
+            }
+            onRevokeMember={openid =>
+              invoke(
+                { kind: 'revoke', purpose, openid, accessRevision: access.revision },
+                '已撤销该成员权限',
+              )
+            }
+            onRenameMember={(openid, nickname) =>
+              invoke(
+                { kind: 'rename', purpose, openid, nickname, accessRevision: access.revision },
+                '昵称已更新',
+              )
+            }
+          />
+        ) : null}
+
+        {activeTab === 'sandbox' ? (
+          <SandboxAndGameSection
+            configDraft={configDraft}
+            configText={configText}
+            busy={busy}
+            onUpdateConfigText={updateConfigText}
+            onReportError={setError}
+            onJumpToJson={jumpToJson}
+          />
+        ) : null}
+
+        {activeTab === 'advanced' ? (
+          <AdvancedSection
+            showPeers={!filterAgentId}
+            peers={peers}
+            modelSelections={state.modelSelections}
+            presetSelections={state.presetSelections}
+            configDraft={configDraft}
+            configError={configError}
+            configText={configText}
+            hasUnsavedConfig={hasUnsavedConfig}
+            busy={busy}
+            jsonOpen={jsonOpen}
+            onToggleJsonOpen={() => setJsonOpen(v => !v)}
+            onChangeConfigText={updateConfigText}
+            onSaveConfig={handleSaveConfig}
+            importDocument={importDocument}
+            importSecret={importSecret}
+            importReport={snapshot?.importReport ?? state.importReport}
+            onChangeImportDocument={setImportDocument}
+            onToggleImportSecret={setImportSecret}
+            onImportDsh={handleImportDsh}
+          />
+        ) : null}
+      </ScrollView>
+    </PaletteContext.Provider>
+  );
 }

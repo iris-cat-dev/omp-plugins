@@ -9,8 +9,10 @@ const { compilePackageEntries } = require('@omp-desktop/plugin/compiler');
 const { IsolatedPluginWorker } = require('@omp-desktop/plugin/worker');
 
 it.each(['cjs', 'mjs'])('executes built QQ %s management RPCs in an isolated worker', async extension => {
+  const clientEntry = fileURLToPath(new URL(`../dist/client.${extension}`, import.meta.url));
   const serviceEntry = fileURLToPath(new URL(`../dist/service.${extension}`, import.meta.url));
-  const { serverBundle } = await compilePackageEntries({ serviceEntry });
+  const { clientBundle, serverBundle } = await compilePackageEntries({ clientEntry, serviceEntry });
+  expect(clientBundle).toContain('qqbot.settings');
   const generation = 7;
   const installation = {
     id: 'qq-distribution', packageId: '@omp-desktop/plugin-qqbot', owner: 'desktop',

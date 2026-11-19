@@ -9,7 +9,7 @@ const declarations = spawnSync(process.execPath, [require.resolve('typescript/bi
 if (declarations.error) throw declarations.error;
 if (declarations.status !== 0) throw new Error('QQ plugin declaration emission failed');
 
-const shared = ['@omp-desktop/plugin', '@omp-desktop/plugin/*', '@omp-desktop/client', '@omp-desktop/client/*', '@omp-desktop/protocol', '@omp-desktop/protocol/*', 'react', 'react/*', 'react-native', 'zod'];
+const shared = ['@omp-desktop/plugin', '@omp-desktop/plugin/*', '@omp-desktop/client', '@omp-desktop/client/*', '@omp-desktop/protocol', '@omp-desktop/protocol/*', 'react', 'react/*', 'react-native', 'react-native-unistyles', 'lucide-react-native', 'zod'];
 // Bundle the QQ SDK's import-only JavaScript and the connector's ESM export
 // into both service formats. The connector's require target is CommonJS .js
 // under a type:module package with no CommonJS scope, so it cannot be external.
