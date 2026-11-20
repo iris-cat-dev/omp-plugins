@@ -369,7 +369,7 @@ async function fixture(scope: 'group' | 'c2c' = 'group', textChunkLimit = 4500, 
       return row ? JSON.parse(row.state) as Player : null;
     } finally { database.close(); }
   };
-  const change = (update: (player: Player) => void) => { const current = player()!; update(current); const storage = openStore(databasePath); try { storage.save(peerKey(peer.appId, peer.scope, peer.openid), current); } finally { storage.close(); } };
+  const change = (update: (player: Player) => void, senderId = 'player') => { const current = player(senderId)!; update(current); const storage = openStore(databasePath); try { storage.save(peerKey(peer.appId, peer.scope, peer.openid), current); } finally { storage.close(); } };
   const seedBosses = () => {
     const storage = openStore(databasePath);
     try {
@@ -1762,3 +1762,63 @@ it.each([
     expect(f.player()!.riftAdventure!.history).toHaveLength(1);
   } finally { release.resolve(); await f.drainImages(); }
 }, 30000);
+
+it('group pagination buttons stay clickable across another member chat turn and shared world change', async () => {
+  const f = await fixture();
+  await f.send('我要修仙');
+  await f.send('我要修仙', 'other');
+  f.change(player => { player.money = 1_000_000; });
+
+  // 1) Multi-page menu keyboard (`修仙商店` > 10 items -> `a: 'page'`) survives another player chatting
+  await f.send('修仙商店');
+  const shopKeyboard = f.messages().at(-1)!.body.keyboard!;
+  const nextShopButton = shopKeyboard.content.rows.flatMap(row => row.buttons)
+    .find(button => JSON.parse(button.action.data).a === 'page')!;
+  expect(nextShopButton).toBeDefined();
+  f.chatResponses.push('道友你好。');
+  await f.send('你好呀', 'other');
+  await f.click(nextShopButton.action.data);
+  const page2 = f.messages().at(-1)!;
+  expect(page2.body.markdown!.content).toContain('第2/');
+  expect(page2.body.keyboard).toBeDefined();
+  // Clicking a purchase button on page 2 succeeds when player state is unchanged
+  const page2Buy = page2.body.keyboard!.content.rows[0]!.buttons[0]!.action.data;
+  const beforeMoney = f.player()!.money;
+  await f.click(page2Buy);
+  expect(f.player()!.money).toBeLessThan(beforeMoney);
+
+  // 2) Market `下一页` (`command: '坊市查询 2'`) survives another player chatting & modifying shared world
+  await f.send('坊市查询');
+  const marketNext = f.choice('坊市查询 2');
+  f.chatResponses.push('天气真好。');
+  await f.send('今天天气不错', 'other');
+  await f.send('修仙签到', 'other');
+  await f.click(marketNext);
+  expect(f.messages().at(-1)!.body.markdown!.content).toContain('2/');
+  expect(f.messages().at(-1)!.body.keyboard).toBeDefined();
+});
+
+it('sect leader can promote a disciple via stripped-mention rank picker and via nickname through gateway', async () => {
+  const f = await fixture();
+  await f.send('我要修仙', 'leader');
+  await f.send('我要修仙', 'disciple');
+  f.change(player => {
+    player.name = 'mirror';
+    player.realm = 27;
+    player.exp = 9_999_999;
+    player.money = 10_000_000;
+  }, 'leader');
+  f.change(player => { player.name = 'Cassandra'; }, 'disciple');
+  await f.send('创建宗门 合欢宗', 'leader');
+  await f.send('加入宗门 合欢宗', 'disciple');
+
+  // Stripped mention: leader sends `宗门职务变更 3` -> gets subordinate button -> clicks -> promoted
+  await f.send('宗门职务变更 3', 'leader');
+  const promoteBtn = f.choice('宗门职位变更 <@disciple> 3');
+  await f.click(promoteBtn, { group_member_openid: 'leader' });
+  expect(f.player('disciple')!.sectPosition).toBe(3);
+
+  // Direct text with nickname + rank name without native mention
+  await f.send('宗门任职 Cassandra 亲传', 'leader');
+  expect(f.player('disciple')!.sectPosition).toBe(2);
+});

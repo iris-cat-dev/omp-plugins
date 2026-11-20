@@ -89,3 +89,40 @@ it('permanent gateway preparation failure does not loop and explicit restart ret
   await vi.advanceTimersByTimeAsync(6000);
   expect(started).toHaveBeenCalledTimes(2);
 });
+
+it('reset-peer and reset-peers drop only current-account mappings, honor revision CAS, and reconnect after failure',async()=>{
+  vi.useFakeTimers();
+  const started=vi.spyOn(Gateway.prototype,'start').mockRejectedValueOnce(new Error('History is unavailable without activating this session. Resume it explicitly to refresh history.'));
+  const dropped=vi.spyOn(Gateway.prototype,'dropPeers').mockResolvedValue();
+  const f=fixture('service');
+  const template=f.read().config.presets[0]!;
+  const peerA={appId:'local-account',scope:'c2c' as const,openid:'user-a',hostId:'host',workspaceId:'w1',agentId:'agent-a',cwd:'/qq-root',sandbox:{root:'/qq-root'},preset:'default',template,protocolPrompt:'QQ',lastDeliveredSequence:0};
+  const peerB={appId:'local-account',scope:'group' as const,openid:'group-b',hostId:'host',workspaceId:'w2',agentId:'agent-b',cwd:'/qq-root',sandbox:{root:'/qq-root'},preset:'default',template,protocolPrompt:'QQ',lastDeliveredSequence:0};
+  const otherAccountPeer={appId:'other-account',scope:'c2c' as const,openid:'user-c',hostId:'host',workspaceId:'w3',agentId:'agent-c',cwd:'/qq-root',sandbox:{root:'/qq-root'},preset:'default',template,protocolPrompt:'QQ',lastDeliveredSequence:0};
+  const stored=await f.context.storage.get();
+  await f.context.storage.patch({
+    peers:{
+      '["local-account","c2c","user-a"]':peerA,
+      '["local-account","group","group-b"]':peerB,
+      '["other-account","c2c","user-c"]':otherAccountPeer,
+    },
+    modelSelections:{'["local-account","c2c","user-a"]':'provider/model'},
+  },stored.revision);
+  await vi.advanceTimersByTimeAsync(0);
+  expect((await f.call(status,{})).connection).toBe('failed');
+  await expect(f.call(action,{kind:'reset-peer',scope:'c2c',openid:'user-a',accessRevision:99})).rejects.toThrow('ACCESS_REVISION_CONFLICT');
+
+  started.mockResolvedValue();
+  const afterOne=await f.call(action,{kind:'reset-peer',scope:'c2c',openid:'user-a',accessRevision:0});
+  expect(afterOne.peers.map((p:{agentId:string})=>p.agentId)).toEqual(['agent-b','agent-c']);
+  expect(dropped).toHaveBeenCalledWith([expect.objectContaining({agentId:'agent-a'})]);
+  expect(started).toHaveBeenCalledTimes(2);
+  expect(afterOne.reason).toBeNull();
+  expect(f.read().modelSelections['["local-account","c2c","user-a"]']).toBe('provider/model');
+
+  const afterAll=await f.call(action,{kind:'reset-peers',accessRevision:afterOne.access.revision});
+  expect(afterAll.peers.map((p:{agentId:string})=>p.agentId)).toEqual(['agent-c']);
+  expect(dropped).toHaveBeenLastCalledWith([expect.objectContaining({agentId:'agent-b'})]);
+  expect(f.secrets.get('app-secret:local-account:0')).toBe('private-fixture-secret');
+  f.controller.abort();
+});

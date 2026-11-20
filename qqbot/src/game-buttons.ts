@@ -34,6 +34,7 @@ const key = (binding: Pick<GameButtonBinding, 'scope' | 'openid' | 'senderId'>) 
 const pageSize = (menu: Menu) => menu.choices.length > 10 ? 8 : 10;
 const pages = (menu: Menu) => Math.ceil(menu.choices.length / pageSize(menu));
 const shortLabel = (label: string) => { const text = Array.from(label.trim()); return text.length > 10 ? text.slice(0, 9).join('') + '…' : text.join(''); };
+const READ_ONLY_NAV_COMMAND = /^坊市查询(?:\s+全部)?(?:\s+\d+)?$/u;
 
 /** Only trusted host/engine choices enter this registry; callbacks contain no executable command. */
 export class GameButtons {
@@ -75,8 +76,11 @@ export class GameButtons {
 
   valid(claim: GameButtonClaim, binding: GameButtonBinding): boolean {
     const saved = claim.menu.binding;
-    return this.current(claim.menu) && saved.route === binding.route && saved.turnId === binding.turnId
-      && saved.gameState === binding.gameState && key(saved) === key(binding);
+    if (!this.current(claim.menu) || saved.route !== binding.route || key(saved) !== key(binding)) return false;
+    if (claim.action.a === 'page') return true;
+    const command = claim.menu.choices[claim.action.i]?.command;
+    if (command && READ_ONLY_NAV_COMMAND.test(command)) return true;
+    return saved.turnId === binding.turnId && saved.gameState === binding.gameState;
   }
 
   consume(claim: GameButtonClaim): string {
@@ -86,11 +90,21 @@ export class GameButtons {
     return command;
   }
 
-  page(claim: GameButtonClaim): void {
+  page(claim: GameButtonClaim, latestBinding?: GameButtonBinding): void {
     if (claim.action.a !== 'page' || !this.current(claim.menu)) throw new Error('游戏选项已失效');
     claim.menu.page = claim.action.p;
     claim.menu.nonce = randomUUID();
     claim.menu.claimed = false;
+    if (latestBinding && latestBinding.gameState === claim.menu.binding.gameState) {
+      claim.menu.binding.turnId = latestBinding.turnId;
+    }
+    timers.clearTimeout(claim.menu.timer);
+    claim.menu.expiresAt = Date.now() + this.timeoutMs;
+    claim.menu.timer = timers.setTimeout(() => this.cancelMenu(claim.menu), this.timeoutMs);
+  }
+
+  release(claim: GameButtonClaim): void {
+    if (this.current(claim.menu)) claim.menu.claimed = false;
   }
 
   keyboard(claim: GameButtonClaim): InlineKeyboard {
@@ -119,7 +133,12 @@ export class GameButtons {
   }
 
   pageText(claim: GameButtonClaim): string {
-    return `第${claim.menu.page + 1}/${pages(claim.menu)}页`;
+    const menu = claim.menu;
+    const size = pageSize(menu);
+    const start = menu.page * size;
+    const slice = menu.choices.slice(start, start + size);
+    const entries = slice.map((choice, offset) => `${start + offset + 1}. ${choice.label}${choice.label === choice.command ? '' : `（${choice.command}）`}`);
+    return `第${menu.page + 1}/${pages(menu)}页（共${menu.choices.length}项）\n${entries.join('\n')}`;
   }
 
   text(claim: GameButtonClaim, requireMention: boolean): string {

@@ -63,6 +63,13 @@ interface GameInteractionInput extends InputOrigin {
   message: { senderId: string; senderName?: string; content: string };
 }
 class SandboxConfirmationError extends Error {}
+function isUnavailableSessionHistoryError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const message = error.message;
+  return message.includes('History is unavailable without activating this session')
+    || message.includes('OMP session file no longer exists')
+    || message.includes('OMP session file is missing a valid session header');
+}
 export class Gateway {
   readonly controller = new AbortController();
   readonly signal: AbortSignal;
@@ -243,16 +250,21 @@ export class Gateway {
     for(const peer of peers)if(peer.appId===this.config.appId){
       // Observe a safe legacy peer without interrupting its turn. Upgrade only
       // when the next admitted QQ message reaches this peer's serial queue.
+      let resetMissingHistory=false;
       if(!this.protocolMatches(peer)&&!this.retiredAgents.has(peer.agentId)&&peer.cwd===await this.agentRoot()&&this.matchesSandbox(peer.sandbox,peer.cwd)){
         const snapshot=await this.findAgent(peer.agentId);
         if(snapshot&&this.matchesSandbox(snapshot.sandbox,peer.cwd)){
           const agent=this.ctx.omp.agents.ref(snapshot);
-          try{await this.attach(peer,agent);}
-          catch(error){if(error instanceof SandboxConfirmationError)await this.stopRejectedAgent(agent);throw error;}
-          continue;
+          try{await this.attach(peer,agent);continue;}
+          catch(error){
+            if(error instanceof SandboxConfirmationError){await this.stopRejectedAgent(agent);throw error;}
+            if(!isUnavailableSessionHistoryError(error))throw error;
+            this.logger.warn(`旧 QQ 会话 ${peer.agentId} 历史不可用，将在启动时重建：${error instanceof Error ? error.message : String(error)}`);
+            resetMissingHistory=true;
+          }
         }
       }
-      await this.getOrCreate(peer.scope,peer.openid);
+      await this.getOrCreate(peer.scope,peer.openid,resetMissingHistory);
     }
     if(this.signal.aborted)return;
     this.connect();
@@ -309,7 +321,11 @@ export class Gateway {
     const previous=snapshot?this.ctx.omp.agents.ref(snapshot):null;
     if(previous&&saved&&!reset&&!this.retiredAgents.has(previous.id)&&this.protocolMatches(saved)&&this.matchesSandbox(saved.sandbox,cwd)&&saved.cwd===cwd&&this.matchesSandbox(snapshot?.sandbox,cwd)){
       try{return await this.attach(saved,previous);}
-      catch(error){if(error instanceof SandboxConfirmationError)await this.stopRejectedAgent(previous);throw error;}
+      catch(error){
+        if(error instanceof SandboxConfirmationError){await this.stopRejectedAgent(previous);throw error;}
+        if(!isUnavailableSessionHistoryError(error))throw error;
+        this.logger.warn(`QQ 会话 ${saved.agentId} 历史不可用，将重建新会话：${error instanceof Error ? error.message : String(error)}`);
+      }
     }
     let handoff:Peer['handoff'];
     if(previous&&saved&&!reset&&!this.retiredAgents.has(previous.id)&&saved.cwd===cwd&&!this.protocolMatches(saved)&&this.matchesSandbox(saved.sandbox,cwd)&&this.matchesSandbox(snapshot?.sandbox,cwd)){
@@ -317,13 +333,24 @@ export class Gateway {
         const finished=await previous.waitForFinish(this.config.processingTimeoutMs);
         if(finished.status!=='idle'||finished.error)throw new Error('旧 QQ 回合尚未完成，协议迁移没有中断该回合');
       }
-      await this.activeRoute(existing??await this.attach(saved,previous));
-      const oldRoute=existing??this.routes.get(key)!;
-      handoff=await this.createHandoff(oldRoute);
-      await this.activeRoute(oldRoute);
-      const current=(await this.store.read()).values.peers[key];
-      if(current?.agentId!==saved.agentId||current.hostId!==saved.hostId)throw new Error('QQ 迁移期间 peer 已被替换');
-      if(oldRoute!==existing)this.retireRoute(oldRoute);
+      let attached: Route | null = existing ?? null;
+      if(!attached){
+        try{attached=await this.attach(saved,previous);}
+        catch(error){
+          if(error instanceof SandboxConfirmationError){await this.stopRejectedAgent(previous);throw error;}
+          if(!isUnavailableSessionHistoryError(error))throw error;
+          this.logger.warn(`旧 QQ 会话 ${saved.agentId} 历史不可用，跳过交接并重建新会话：${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+      if(attached){
+        await this.activeRoute(attached);
+        const oldRoute=existing??this.routes.get(key)!;
+        handoff=await this.createHandoff(oldRoute);
+        await this.activeRoute(oldRoute);
+        const current=(await this.store.read()).values.peers[key];
+        if(current?.agentId!==saved.agentId||current.hostId!==saved.hostId)throw new Error('QQ 迁移期间 peer 已被替换');
+        if(oldRoute!==existing)this.retireRoute(oldRoute);
+      }
     }
     if(existing)this.retireRoute(existing);
     if(previous&&!this.retiredAgents.has(previous.id))await previous.stop();
@@ -359,7 +386,7 @@ export class Gateway {
     if(!await this.currentConfig()||peer.cwd!==await this.agentRoot()||!this.matchesSandbox(peer.sandbox,peer.cwd))throw new Error('QQ 沙箱路由已失效');
     const key=peerKey(peer.appId,peer.scope,peer.openid);const route:Route={peer,agent,unsubscribe:null,buffer:null,textRows:new Map(),files:new Map(),toolRevisions:new Map(),chain:Promise.resolve(),pending:new Map(),sceneImages:new Map(),lastSeq:peer.lastDeliveredSequence,enabledDelivery:false};this.routes.set(key,route);
     const buffered:OmpAgentStream[]=[];let observing=true;
-    const receive=(stream:OmpAgentStream)=>{if(this.signal.aborted||this.routes.get(key)!==route)return;if(stream.event.type==='turn_started'){this.gameButtons.cancelRoute(route);}if(stream.event.type==='turn_canceled'&&stream.event.turnId===route.turnId){route.canceledTurnId=route.turnId;this.gameButtons.cancelRoute(route);}if(observing){buffered.push(stream);return;}route.chain=route.chain.then(()=>this.deliveryRoute.run(route,()=>this.event(route,stream))).catch(error=>this.report(error));};
+    const receive=(stream:OmpAgentStream)=>{if(this.signal.aborted||this.routes.get(key)!==route)return;if(stream.event.type==='turn_canceled'&&stream.event.turnId===route.turnId){route.canceledTurnId=route.turnId;this.gameButtons.cancelRoute(route);}if(observing){buffered.push(stream);return;}route.chain=route.chain.then(()=>this.deliveryRoute.run(route,()=>this.event(route,stream))).catch(error=>this.report(error));};
     let observation: OmpAgentObservation;
     try { observation=await agent.observe(receive); } catch(error) { this.retireRoute(route); throw error; }
     route.unsubscribe=observation.unsubscribe;
@@ -396,6 +423,30 @@ export class Gateway {
       const binding = claim.menu.binding;
       const key = peerKey(this.config.appId, binding.scope, binding.openid);
       this.cache.cacheEventId(binding.scope, binding.openid, event.id);
+      if (claim.action.a === 'page') {
+        try {
+          if (this.signal.aborted || !this.game || !await this.authorized(binding, binding.senderId)) {
+            this.gameButtons.discard(claim);
+            return;
+          }
+          const route = this.routes.get(key);
+          if (!route || route !== binding.route) {
+            this.gameButtons.discard(claim);
+            return;
+          }
+          const currentBinding = this.gameButtonBinding(route, binding.senderId, claim.menu.choices);
+          if (!this.gameButtons.valid(claim, currentBinding)) {
+            this.gameButtons.discard(claim);
+            return;
+          }
+          this.gameButtons.page(claim, currentBinding);
+          await this.sendGameButtonPage(claim, event.id);
+        } catch (error) {
+          this.gameButtons.release(claim);
+          throw error;
+        }
+        return;
+      }
       try {
         await this.queue.enqueue(key, async () => {
           if (this.signal.aborted || !this.game || !await this.authorized(binding, binding.senderId)) return;
@@ -407,11 +458,6 @@ export class Gateway {
           await this.activeRoute(route);
           if (!snapshot || snapshot.agent.activeTurn || route.review || route.pending.size || !await this.authorized(binding, binding.senderId)) return;
           if (!this.gameButtons.valid(claim, this.gameButtonBinding(route, binding.senderId, claim.menu.choices))) return;
-          if (claim.action.a === 'page') {
-            this.gameButtons.page(claim);
-            await this.sendGameButtonPage(claim, event.id);
-            return;
-          }
           const command = this.gameButtons.consume(claim);
           const input: GameInteractionInput = { kind: 'game-interaction', event,
             replyTarget: this.gameButtons.target(claim, event.id),
@@ -875,6 +921,23 @@ export class Gateway {
   private async invitationReply(context:MiddlewareContext,claimed:boolean){
     const key=JSON.stringify([context.replyTarget.scope,context.replyTarget.targetId,context.replyTarget.msgId??'']);this.invitationReplies.add(key);
     try{await this.bot.sendMarkdown(context.replyTarget,claimed?'已认领该访问名单身份。':'配对码已过期或已撤销；本次没有修改访问名单。');}finally{this.invitationReplies.delete(key);}
+  }
+  async dropPeers(peers: readonly Peer[]) {
+    const agents = new Map<string, OmpAgentHandle>();
+    for (const peer of peers) {
+      if (peer.appId !== this.config.appId) continue;
+      const key = peerKey(peer.appId, peer.scope, peer.openid);
+      const route = this.routes.get(key);
+      if (route) {
+        agents.set(route.peer.agentId, route.agent);
+        this.retireRoute(route);
+      }
+      this.retiredAgents.add(peer.agentId);
+      if (peer.hostId !== this.ctx.omp.hostId || agents.has(peer.agentId) || !this.ctx.omp?.agents?.list) continue;
+      const snapshot = await this.findAgent(peer.agentId).catch(() => null);
+      if (snapshot) agents.set(peer.agentId, this.ctx.omp.agents.ref(snapshot));
+    }
+    await Promise.all([...agents.values()].map(agent => agent.stop().catch(error => this.report(error))));
   }
   async retire() {
     const agents = new Map([...this.routes.values()].map(route => [route.peer.agentId, route.agent]));

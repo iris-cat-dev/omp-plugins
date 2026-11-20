@@ -135,9 +135,13 @@ function createFixture(options: {
   mode?: 'active' | 'manage';
   appId?: string;
   providers?: ProviderSnapshotEntry[];
+  connection?: 'waiting' | 'connecting' | 'ready' | 'failed';
+  reason?: string | null;
 } = {}) {
   const mode = options.mode ?? 'active';
   const appId = options.appId ?? '102078234';
+  let connection: 'waiting' | 'connecting' | 'ready' | 'failed' = options.connection ?? (appId ? 'ready' : 'waiting');
+  let reason: string | null = options.reason !== undefined ? options.reason : (appId ? null : '等待绑定账号');
   const controller = new AbortController();
   let state = StateSchema.parse({
     config: { appId, sandboxEnabled: true, sandboxPath: '/tmp/qq-sandbox' },
@@ -171,8 +175,8 @@ function createFixture(options: {
 
   const makeStatus = () => ({
     generation: 1,
-    connection: (appId ? 'ready' : 'waiting') as 'ready' | 'waiting',
-    reason: appId ? null : '等待绑定账号',
+    connection,
+    reason,
     appId: state.config.appId,
     secretConfigured: Boolean(appId),
     binding: { phase: 'idle' as const },
@@ -202,6 +206,21 @@ function createFixture(options: {
       } else if (payload.kind === 'revoke') {
         state.access.allowC2c = state.access.allowC2c.filter(member => member.openid !== payload.openid);
         state.access.revision++;
+      } else if (payload.kind === 'reset-peer') {
+        const key = Object.entries(state.peers).find(([, peer]) =>
+          peer.appId === state.config.appId && peer.scope === payload.scope && peer.openid === payload.openid,
+        )?.[0];
+        if (key) delete state.peers[key];
+        state.access.revision++;
+        connection = 'ready';
+        reason = null;
+      } else if (payload.kind === 'reset-peers') {
+        for (const [key, peer] of Object.entries(state.peers)) {
+          if (peer.appId === state.config.appId) delete state.peers[key];
+        }
+        state.access.revision++;
+        connection = 'ready';
+        reason = null;
       }
       return makeStatus();
     }
@@ -438,6 +457,52 @@ describe('QQBot refactored settings UI', () => {
     fireEvent.change(screen.getByLabelText('修改成员昵称'), { target: { value: 'Alice Updated' } });
     fireEvent.click(screen.getByRole('button', { name: '保存' }));
     await waitFor(() => expect(f.getState().access.allowC2c[0]?.nickname).toBe('Alice Updated'));
+    f.controller.abort();
+  });
+
+  it('offers one-click session recovery on missing-history connection failure and per-peer reset controls', async () => {
+    const f = createFixture({
+      appId: '102078234',
+      connection: 'failed',
+      reason: 'History is unavailable without activating this session. Resume it explicitly to refresh history.',
+    });
+    const recoverBtn = await screen.findByTestId('qqbot-recover-peers');
+    expect(screen.getByText(/检测到已有 QQ 会话的历史文件丢失或无法读取/)).toBeTruthy();
+
+    fireEvent.click(recoverBtn);
+    await waitFor(() => {
+      expect(f.rpcCalls.some(call =>
+        call.name === 'qqbot.action'
+        && typeof call.input === 'object'
+        && call.input !== null
+        && 'kind' in call.input
+        && call.input.kind === 'reset-peers',
+      )).toBe(true);
+      expect(screen.getByTestId('qqbot-connection-status').textContent).toContain('已连接');
+    });
+    f.controller.abort();
+  });
+
+  it('supports single-peer reset with inline confirmation in advanced tab', async () => {
+    const f = createFixture({ appId: '102078234' });
+    await screen.findByTestId('qqbot-section-model');
+    fireEvent.click(screen.getByTestId('qqbot-tab-advanced'));
+    const resetTrigger = await screen.findByTestId('qqbot-reset-peer-c2c-OPENID_USER_1');
+    fireEvent.click(resetTrigger);
+    const confirmBtn = await screen.findByTestId('qqbot-reset-peer-confirm-c2c-OPENID_USER_1');
+    fireEvent.click(confirmBtn);
+    await waitFor(() => {
+      expect(f.rpcCalls.some(call =>
+        call.name === 'qqbot.action'
+        && typeof call.input === 'object'
+        && call.input !== null
+        && 'kind' in call.input
+        && call.input.kind === 'reset-peer'
+        && 'openid' in call.input
+        && call.input.openid === 'OPENID_USER_1',
+      )).toBe(true);
+      expect(Object.keys(f.getState().peers)).toHaveLength(0);
+    });
     f.controller.abort();
   });
 });

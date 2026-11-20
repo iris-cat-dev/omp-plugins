@@ -4,7 +4,7 @@ import type { PluginClientContext, PluginHostProps } from '@omp-desktop/plugin';
 import { Bot, CheckCircle2, RefreshCw, RotateCw, Settings2, Shield, SlidersHorizontal, Terminal } from 'lucide-react-native';
 import { z } from 'zod';
 import { status, action, exportAccess, StatusSchema } from './rpc.ts';
-import { StateSchema, ConfigSchema, AccessSchema, type State } from './state.ts';
+import { StateSchema, ConfigSchema, AccessSchema, type Peer, type State } from './state.ts';
 import type { PairPurpose } from './shared/pairing-protocol.ts';
 import { prepareDshImport } from './importer.ts';
 import {
@@ -37,6 +37,33 @@ const connectionLabels = {
   ready: '已连接',
   failed: '连接失败',
 } as const;
+
+function isPeerRecoveryReason(reason: string | null | undefined): boolean {
+  if (!reason) return false;
+  return /History is unavailable without activating this session|OMP session file no longer exists|OMP session file is missing a valid session header/i.test(
+    reason,
+  )
+    || reason.includes('QQ peer 映射属于另一 daemon')
+    || reason.includes('持久 QQ peer 映射属于另一 daemon')
+    || reason.includes('Desktop agent 未确认当前 QQ 沙箱');
+}
+
+function formatConnectionReason(reason: string, canRecoverPeers: boolean): string {
+  const suffix = canRecoverPeers
+    ? '可点击右侧「重置会话并重连」清理旧映射并重建连接（账号、名单、模型偏好与游戏存档不受影响）。'
+    : '请前往「会话与高级」重置损坏会话映射，或恢复对应的 OMP 会话文件后重启连接。';
+  if (
+    /History is unavailable without activating this session|OMP session file no longer exists|OMP session file is missing a valid session header/i.test(
+      reason,
+    )
+  ) {
+    return `检测到已有 QQ 会话的历史文件丢失或无法读取，导致网关启动失败。${suffix}\n原始错误：${reason}`;
+  }
+  if (reason.includes('QQ peer 映射属于另一 daemon') || reason.includes('持久 QQ peer 映射属于另一 daemon')) {
+    return `检测到已有 QQ 会话映射属于另一台主机或 daemon。${suffix}\n原始错误：${reason}`;
+  }
+  return reason;
+}
 
 export default function setup(ctx: PluginClientContext) {
   const Page = (props: PluginHostProps) => <QQPage context={ctx} {...props} />;
@@ -202,9 +229,14 @@ function QQPage({
     [configText, savedConfig],
   );
 
-  const peers = (snapshot?.peers ?? Object.values(state.peers)).filter(
+  const allPeers = snapshot?.peers ?? Object.values(state.peers);
+  const currentAppId = snapshot?.appId ?? state.config.appId;
+  const peers = allPeers.filter(
     peer => !filterAgentId || peer.agentId === filterAgentId,
   );
+  const currentAppPeers = currentAppId
+    ? allPeers.filter(peer => peer.appId === currentAppId)
+    : [];
   const access = snapshot?.access ?? state.access;
 
   const connectionLabel =
@@ -322,6 +354,33 @@ function QQPage({
     }, 'DSH 数据已导入');
   };
 
+  const handleResetPeer = (peer: Peer) =>
+    invoke(
+      {
+        kind: 'reset-peer',
+        scope: peer.scope,
+        openid: peer.openid,
+        accessRevision: access.revision,
+      },
+      '已重置该 QQ 会话映射',
+    );
+
+  const handleResetAllPeers = () =>
+    invoke(
+      {
+        kind: 'reset-peers',
+        accessRevision: access.revision,
+      },
+      '已重置当前账号的全部 QQ 会话映射并尝试重连',
+    );
+
+  const canRecoverPeers = Boolean(
+    ctx.mode === 'active'
+      && snapshot?.connection === 'failed'
+      && currentAppPeers.length > 0
+      && isPeerRecoveryReason(snapshot.reason),
+  );
+
   const jumpToJson = () => {
     setJsonOpen(true);
     selectTab('advanced');
@@ -425,7 +484,20 @@ function QQPage({
           {ctx.mode === 'active' && snapshot?.reason ? (
             <InlineBanner
               tone={snapshot.connection === 'failed' ? 'danger' : 'info'}
-              message={snapshot.reason}
+              message={formatConnectionReason(snapshot.reason, canRecoverPeers)}
+              action={
+                canRecoverPeers ? (
+                  <ActionButton
+                    icon={RotateCw}
+                    label="重置会话并重连"
+                    variant="danger"
+                    size="xs"
+                    disabled={busy}
+                    onPress={handleResetAllPeers}
+                    testID="qqbot-recover-peers"
+                  />
+                ) : undefined
+              }
             />
           ) : null}
         </View>
@@ -510,8 +582,11 @@ function QQPage({
           <PeerAgentsCard
             title="当前 Agent 关联的 QQ 会话"
             peers={peers}
+            currentAppId={currentAppId}
             modelSelections={state.modelSelections}
             presetSelections={state.presetSelections}
+            busy={busy}
+            onResetPeer={handleResetPeer}
           />
         ) : null}
 
@@ -638,8 +713,11 @@ function QQPage({
           <AdvancedSection
             showPeers={!filterAgentId}
             peers={peers}
+            currentAppId={currentAppId}
             modelSelections={state.modelSelections}
             presetSelections={state.presetSelections}
+            onResetPeer={handleResetPeer}
+            onResetAllPeers={handleResetAllPeers}
             configDraft={configDraft}
             configError={configError}
             configText={configText}

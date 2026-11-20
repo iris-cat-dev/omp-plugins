@@ -683,3 +683,43 @@ it('starts the real external engine at the unchanged installation database path 
   expect(inspected.databasePath).toBe(join(home,'.omp','qqbot-data','installation-installation','xiuxian.sqlite'));
   expect(inspected.player).toBeNull();expect((await stat(inspected.databasePath)).isFile()).toBe(true);
 });
+
+it.each([
+  ['confirmed', 'History is unavailable without activating this session. Resume it explicitly to refresh history.'],
+  ['legacy', 'History is unavailable without activating this session. Resume it explicitly to refresh history.'],
+  ['confirmed', 'OMP session file no longer exists: /tmp/deleted.jsonl'],
+] as const)('startup auto-recreates %s peer when session history is unavailable (%s)', async (kind, message) => {
+  const f = await fixture();
+  const sandbox = { root: f.root };
+  const saved = f.saved(sandbox);
+  if (kind === 'legacy') delete saved.protocolVersion;
+  await f.store.mutate(state => { state.peers[f.key] = saved; });
+  const before = (await f.store.read()).values;
+  f.old.refresh.mockResolvedValue({ agent: { id: f.old.id, sandbox } });
+  const oldObserve = vi.fn(async () => { throw new Error(message); });
+  Object.assign(f.old, { observe: oldObserve });
+  const started = vi.spyOn(f.internal.bot, 'start').mockResolvedValue();
+  await f.gateway.start();
+  expect(started).toHaveBeenCalledOnce();
+  expect(oldObserve).toHaveBeenCalledOnce();
+  expect(f.old.stop).toHaveBeenCalledOnce();
+  expect(f.create).toHaveBeenCalledOnce();
+  const after = (await f.store.read()).values;
+  expect(after.peers[f.key]).toMatchObject({ agentId: 'new-agent', sandbox, protocolVersion: 2 });
+  expect(after.config).toEqual(before.config);
+  expect(after.access).toEqual(before.access);
+  expect(after.credentialVersions).toEqual(before.credentialVersions);
+  expect(after.modelSelections).toEqual(before.modelSelections);
+  expect(after.presetSelections).toEqual(before.presetSelections);
+});
+
+it('startup still fails instead of recreating a peer on unexpected observe errors', async () => {
+  const f = await fixture();
+  const sandbox = { root: f.root };
+  await f.store.mutate(state => { state.peers[f.key] = f.saved(sandbox); });
+  f.old.refresh.mockResolvedValue({ agent: { id: f.old.id, sandbox } });
+  Object.assign(f.old, { observe: vi.fn(async () => { throw new Error('daemon transport disconnected'); }) });
+  await expect(f.gateway.start()).rejects.toThrow('daemon transport disconnected');
+  expect(f.create).not.toHaveBeenCalled();
+  expect((await f.store.read()).values.peers[f.key]?.agentId).toBe(f.old.id);
+});

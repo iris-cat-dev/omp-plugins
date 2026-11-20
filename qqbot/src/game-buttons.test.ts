@@ -110,3 +110,25 @@ it('a new text turn or route retirement invalidates only the affected player men
   f.buttons.cancelRoute(binding.route);
   expect(claim(f.buttons, event(raw, { group_member_openid: 'other' }))).toBeNull();
 });
+
+it('page navigation and read-only market paging stay valid across unrelated turn/world changes while stateful choices stay strict', () => {
+  const f = fixture(9, 25);
+  const buttons = f.buttons.keyboard(f.menu).content.rows.flatMap(row => row.buttons);
+  const next = buttons.find(button => JSON.parse(button.action.data).a === 'page')!;
+  const pageClaim = claim(f.buttons, event(next.action.data))!;
+  const drifted: GameButtonBinding = { ...binding, turnId: 'other-player-turn', gameState: '{"world":"changed"}' };
+  expect(f.buttons.valid(pageClaim, drifted)).toBe(true);
+  f.buttons.page(pageClaim, { ...binding, turnId: 'other-player-turn' });
+  expect(f.buttons.pageText(pageClaim)).toContain('第2/4页');
+
+  const navMenu = f.buttons.show(binding, [
+    { label: '购生骨丹', command: '坊市购买 1' },
+    { label: '下一页', command: '坊市查询 2' },
+  ]);
+  const navButtons = f.buttons.keyboard(navMenu).content.rows.flatMap(row => row.buttons);
+  const buyClaim = claim(f.buttons, event(navButtons[0]!.action.data))!;
+  expect(f.buttons.valid(buyClaim, drifted)).toBe(false);
+  f.buttons.release(buyClaim);
+  const marketNextClaim = claim(f.buttons, event(navButtons[1]!.action.data))!;
+  expect(f.buttons.valid(marketNextClaim, drifted)).toBe(true);
+});

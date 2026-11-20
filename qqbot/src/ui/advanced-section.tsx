@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Text, View } from 'react-native';
-import { Code, Upload } from 'lucide-react-native';
+import { Code, RotateCw, Trash2, Upload } from 'lucide-react-native';
 import { peerKey, type Config, type Peer } from '../state.ts';
 import {
   ActionButton,
@@ -16,22 +16,83 @@ import {
 
 export function PeerAgentsCard({
   peers,
+  currentAppId,
   modelSelections,
   presetSelections,
   title = '活跃会话（Desktop Peer Agents）',
+  busy = false,
+  onResetPeer,
+  onResetAllPeers,
 }: {
   peers: readonly Peer[];
+  currentAppId?: string;
   modelSelections: Record<string, string | null>;
   presetSelections: Record<string, string>;
   title?: string;
+  busy?: boolean;
+  onResetPeer?: (peer: Peer) => void;
+  onResetAllPeers?: () => void;
 }) {
   const p = usePalette();
+  const [confirmPeerKey, setConfirmPeerKey] = useState<string | null>(null);
+  const [confirmResetAll, setConfirmResetAll] = useState(false);
+  const resettableCount = currentAppId
+    ? peers.filter(peer => peer.appId === currentAppId).length
+    : peers.length;
   return (
     <SectionCard
       title={title}
       subtitle="每个 QQ 私聊或群聊对应独立的 Desktop Agent，可在 Desktop 中继续查看与恢复"
-      trailing={<Badge label={`${peers.length} 个会话`} />}
+      trailing={
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <Badge label={`${peers.length} 个会话`} />
+          {onResetAllPeers && resettableCount > 0 && !confirmResetAll ? (
+            <ActionButton
+              icon={Trash2}
+              label="重置全部会话"
+              variant="dangerOutline"
+              size="xs"
+              disabled={busy}
+              onPress={() => {
+                setConfirmPeerKey(null);
+                setConfirmResetAll(true);
+              }}
+              testID="qqbot-reset-all-peers"
+            />
+          ) : null}
+        </View>
+      }
     >
+      {confirmResetAll && onResetAllPeers && resettableCount > 0 ? (
+        <View style={{ padding: 12, borderBottomWidth: 1, borderBottomColor: p.border }}>
+          <InlineBanner
+            tone="danger"
+            message={`确认重置当前账号的全部 ${resettableCount} 个 QQ 会话映射？将解除旧会话绑定，下次收到消息或重连时自动创建新 Desktop Agent；账号、白名单、模型偏好与游戏存档不受影响。`}
+            action={
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <ActionButton
+                  label="取消"
+                  variant="ghost"
+                  size="xs"
+                  disabled={busy}
+                  onPress={() => setConfirmResetAll(false)}
+                />
+                <ActionButton
+                  label="确认重置全部"
+                  variant="danger"
+                  size="xs"
+                  disabled={busy}
+                  onPress={() => {
+                    setConfirmResetAll(false);
+                    onResetAllPeers();
+                  }}
+                  testID="qqbot-reset-all-peers-confirm"
+                />
+              </View>
+            }
+          />
+        </View>
+      ) : null}
       {peers.length === 0 ? (
         <View style={{ padding: 16 }}>
           <Text style={{ fontSize: 13, color: p.foregroundMuted }}>
@@ -43,6 +104,8 @@ export function PeerAgentsCard({
           const key = peerKey(peer.appId, peer.scope, peer.openid);
           const modelOverride = modelSelections[key];
           const nextPreset = presetSelections[key];
+          const canReset = Boolean(onResetPeer && (!currentAppId || peer.appId === currentAppId));
+          const confirming = confirmPeerKey === key;
           return (
             <View
               key={peer.agentId}
@@ -53,16 +116,63 @@ export function PeerAgentsCard({
                 ...(index > 0 ? { borderTopWidth: 1, borderTopColor: p.border } : null),
               }}
             >
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                <Badge label={peer.scope === 'group' ? '群聊' : '私聊'} tone={peer.scope === 'group' ? 'accent' : 'neutral'} />
-                <Text selectable style={{ fontSize: 13, fontWeight: '500', fontFamily: p.monoFont, color: p.foreground }}>
-                  {peer.openid}
-                </Text>
-                <Badge label={`preset: ${peer.preset}`} />
-                {nextPreset && nextPreset !== peer.preset ? (
-                  <Badge label={`下次: ${nextPreset}`} tone="warning" />
+              <View
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 8,
+                  flexWrap: 'wrap',
+                }}
+              >
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap', flex: 1 }}>
+                  <Badge label={peer.scope === 'group' ? '群聊' : '私聊'} tone={peer.scope === 'group' ? 'accent' : 'neutral'} />
+                  <Text selectable style={{ fontSize: 13, fontWeight: '500', fontFamily: p.monoFont, color: p.foreground }}>
+                    {peer.openid}
+                  </Text>
+                  <Badge label={`preset: ${peer.preset}`} />
+                  {nextPreset && nextPreset !== peer.preset ? (
+                    <Badge label={`下次: ${nextPreset}`} tone="warning" />
+                  ) : null}
+                  {modelOverride ? <Badge label={`模型: ${modelOverride}`} tone="accent" mono /> : null}
+                </View>
+                {canReset ? (
+                  confirming ? (
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      <ActionButton
+                        label="取消"
+                        variant="ghost"
+                        size="xs"
+                        disabled={busy}
+                        onPress={() => setConfirmPeerKey(null)}
+                      />
+                      <ActionButton
+                        label="确认重置"
+                        variant="danger"
+                        size="xs"
+                        disabled={busy}
+                        onPress={() => {
+                          setConfirmPeerKey(null);
+                          onResetPeer?.(peer);
+                        }}
+                        testID={`qqbot-reset-peer-confirm-${peer.scope}-${peer.openid}`}
+                      />
+                    </View>
+                  ) : (
+                    <ActionButton
+                      icon={RotateCw}
+                      label="重置会话"
+                      variant="outline"
+                      size="xs"
+                      disabled={busy}
+                      onPress={() => {
+                        setConfirmResetAll(false);
+                        setConfirmPeerKey(key);
+                      }}
+                      testID={`qqbot-reset-peer-${peer.scope}-${peer.openid}`}
+                    />
+                  )
                 ) : null}
-                {modelOverride ? <Badge label={`模型: ${modelOverride}`} tone="accent" mono /> : null}
               </View>
               <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
                 <Text selectable style={{ fontSize: 11, fontFamily: p.monoFont, color: p.foregroundMuted }}>
@@ -86,8 +196,11 @@ export function PeerAgentsCard({
 export function AdvancedSection({
   showPeers = true,
   peers,
+  currentAppId,
   modelSelections,
   presetSelections,
+  onResetPeer,
+  onResetAllPeers,
   configDraft,
   configError,
   configText,
@@ -106,8 +219,11 @@ export function AdvancedSection({
 }: {
   showPeers?: boolean;
   peers: readonly Peer[];
+  currentAppId?: string;
   modelSelections: Record<string, string | null>;
   presetSelections: Record<string, string>;
+  onResetPeer?: (peer: Peer) => void;
+  onResetAllPeers?: () => void;
   configDraft: Config | null;
   configError: string | null;
   configText: string;
@@ -133,8 +249,12 @@ export function AdvancedSection({
       {showPeers ? (
         <PeerAgentsCard
           peers={peers}
+          currentAppId={currentAppId}
           modelSelections={modelSelections}
           presetSelections={presetSelections}
+          busy={busy}
+          onResetPeer={onResetPeer}
+          onResetAllPeers={onResetAllPeers}
         />
       ) : null}
 
