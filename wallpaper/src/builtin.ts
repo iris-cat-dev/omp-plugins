@@ -9,7 +9,7 @@ export const WallpaperConfigSchema = z.strictObject({
 });
 export const wallpaperBuiltin = {
   id: "wallpaper",
-  version: "0.7.2",
+  version: "0.7.3",
   capabilities: ["storage.scoped", "wallpaper.media", "ui.background", "ui.settings"],
   defaultEnabled: false,
   defaultConfig: DEFAULT_WALLPAPER_CONFIGURATION,

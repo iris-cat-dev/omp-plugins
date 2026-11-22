@@ -27,7 +27,7 @@
     "zod": "4.4.3"
   },
   "peerDependencies": {
-    "@omp-desktop/plugin": "0.7.2",
+    "@omp-desktop/plugin": "0.7.3",
     "react": "19.1.0",
     "zod": "4.4.3"
   },

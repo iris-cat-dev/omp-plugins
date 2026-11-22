@@ -1,6 +1,6 @@
 {
   "name": "@omp-desktop/plugin-wallpaper",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "private": true,
   "type": "module",
   "files": ["dist", "src", "!src/**/*.test.*"],
@@ -17,6 +17,6 @@
     "entries": { "client": "./dist/esm/client.js" },
     "capabilities": ["storage.scoped", "wallpaper.media", "ui.background", "ui.settings"]
   },
-  "peerDependencies": { "@omp-desktop/plugin": "0.7.2", "react": "19.1.0", "react-i18next": "*" },
-  "dependencies": { "@omp-desktop/protocol": "0.7.2", "@tanstack/react-virtual": "^3.13.21", "zod": "^4.4.3" }
+  "peerDependencies": { "@omp-desktop/plugin": "0.7.3", "react": "19.1.0", "react-i18next": "*" },
+  "dependencies": { "@omp-desktop/protocol": "0.7.3", "@tanstack/react-virtual": "^3.13.21", "zod": "^4.4.3" }
 }

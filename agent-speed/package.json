@@ -1,6 +1,6 @@
 {
   "name": "@omp-desktop/plugin-agent-speed",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "private": true,
   "type": "module",
   "files": ["dist", "src", "!src/**/*.test.*"],
