@@ -1,0 +1,38 @@
+{
+  "name": "@omp-desktop/plugin-blueprint-canvas",
+  "version": "0.7.3",
+  "description": "An infinite workspace canvas for runnable blueprints",
+  "private": true,
+  "type": "module",
+  "license": "AGPL-3.0-or-later",
+  "files": ["dist", "src", "!src/**/*.test.*", "LICENSE.openagi"],
+  "scripts": {
+    "build": "npm run build --workspace=@omp-desktop/plugin && node ../../scripts/build-desktop-plugins.mjs plugins/blueprint-canvas",
+    "prepack": "npm run build",
+    "test": "vitest run"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/types/client.d.ts",
+      "source": "./src/client.tsx",
+      "import": "./dist/esm/client.js",
+      "require": "./dist/cjs/client.js",
+      "default": "./dist/esm/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "ompDesktop": {
+    "apiVersion": 1,
+    "id": "blueprint-canvas",
+    "owner": "desktop",
+    "entries": { "client": "./dist/esm/client.js" },
+    "capabilities": ["storage.scoped", "agents.events", "agents.create", "agents.prompt", "images.generate"]
+  },
+  "peerDependencies": {
+    "@omp-desktop/plugin": "0.7.3",
+    "@omp-desktop/client": "0.7.3",
+    "react": "19.1.0"
+  },
+  "dependencies": { "@omp-desktop/protocol": "0.7.3", "zod": "^4.4.3" },
+  "devDependencies": { "@types/react": "~19.2.0", "vitest": "^4.1.6" }
+}

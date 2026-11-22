@@ -7,6 +7,7 @@ Optional folder-installed plugins and source examples for [OMP Desktop](https://
 - `desktop-pet/`: desktop pet, authoring workflow, and bundled Iris assets.
 - `qqbot/`: QQ gateway, account UI, and agent conversations.
 - `schedules/`: scheduled agents, existing-agent heartbeats, run history, and multi-host management.
+- `blueprint-canvas/`: Infinite Canvas workspace panel for runnable node graphs and image-fed agent turns.
 - `ask-notifier/`: optional Windows QQ reminders for questions, plan reviews, and other decisions awaiting your input, with phone, Pad, or both-device delivery.
 - `examples/`: Catppuccin, Linear attachments, and the local counter plugin.
 
@@ -32,6 +33,22 @@ Source-plugin examples use an id-only `omp-plugin.json` and import `@omp-desktop
 Plugin callbacks access the host through `context.omp`; React surfaces use `useOmp()`. The client SDK exposes `OmpApi`, `OmpAgent`, `createOmpApi()` and `createOmpClient()`. The pet authoring helper and Desktop development launcher use `OMP_ELECTRON_USER_DATA_DIR` to select the user-data directory. Plugin hosts and callers must use these names together; obsolete aliases are not provided.
 
 Commit and push changes here before updating Desktop's submodule pointer. Generated `dist/` and `node_modules/` directories stay out of this repository.
+
+## Infinite Canvas
+
+From the Desktop checkout, run `npm run build --workspace=@omp-desktop/plugin-blueprint-canvas`. In Desktop **Settings → Plugins → Add plugin → From folder**, install `plugins/blueprint-canvas` on **This Desktop**, grant the requested permissions, and enable it. Select a workspace and search the command center for **打开无限画布**. The starter graph runs without a model.
+
+Use the wheel to zoom, hold Space or the middle mouse button to pan, and press **F** to fit all nodes. Drag a node by its title. Drag between pins of the same type, or select the two pins in sequence. Click **保存** to keep the graph, images, and viewport for this workspace in the current Desktop profile.
+
+Drop a PNG, JPEG, or WebP onto the canvas to create an image node. Drag the image to move it; hover or select it to reveal the bottom-right resize handle. Drop another image onto the same node to replace it without rewiring. The display size is saved with the graph; resizing leaves the image sent to the model unchanged.
+
+Use the **智能体** node's **模型** dropdown to choose an OMP model from the workspace host. Each node saves its own selection; **主机默认** follows the host's default.
+
+Connect image nodes to the **图片** input alongside a text prompt. The input shows the attached image count and sends them in connection order when the node runs. Choose a model under **支持图片**, or use a host default that supports images. Each image is limited to 4 MiB and 32 MP, and a canvas can store 8 MiB of image bytes. The host daemon must report model image capability.
+
+To generate or edit an image, enable and configure **Settings → Host → Image generation** on the workspace host. Update the Desktop and host daemon together, then reload the plugin and grant its image-generation permission. Add **图像生成** and connect **开始 → 执行**, or connect an upstream node's completion output. Enter the prompt in the node or link a text node. Connect one or more **图片** outputs to **参考图** to edit; leave it empty to generate from text.
+
+The result appears on the node. Connect **生成图片** and **完成** to a downstream node to use the result in the same run. To keep it between runs, click **保留为图片节点**, then **保存**; the original reference images stay unchanged. Only running the node calls the configured image provider.
 
 ## Agent Speed native monitor
 
