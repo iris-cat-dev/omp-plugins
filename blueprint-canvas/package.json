@@ -26,7 +26,7 @@
     "id": "blueprint-canvas",
     "owner": "desktop",
     "entries": { "client": "./dist/esm/client.js" },
-    "capabilities": ["storage.scoped", "agents.events", "agents.create", "agents.prompt", "images.generate"]
+    "capabilities": ["storage.scoped", "workspace.files", "agents.events", "agents.create", "agents.prompt", "images.generate"]
   },
   "peerDependencies": {
     "@omp-desktop/plugin": "0.7.3",

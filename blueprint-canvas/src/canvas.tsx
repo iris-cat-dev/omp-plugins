@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type DragEvent, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type DragEvent, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
 import type { ModelCatalog } from "./agent.js";
 import { fitView, linkD, MAX_IMAGE_WIDTH, MIN_IMAGE_WIDTH, resizeImageWidth, screenToWorld, zoomAt, type Point, type Rect, type Viewport } from "./geometry.js";
 import { checkImageBudget, connect, createNode, endpointKey, findPin, NODE_DEFS, type BlueprintGraph, type BlueprintNode, type Endpoint, type NodeType, type Pin } from "./graph.js";
@@ -33,12 +33,16 @@ const Wire = memo(function Wire({ id, type, ax, ay, bx, by, selected, active, la
 
 interface CanvasProps {
   graph: BlueprintGraph;
-  onChange(graph: BlueprintGraph): void;
+  onChange(graph: BlueprintGraph, group?: string): void;
+  onEndEdit(group: string): void;
   autoFit: boolean;
+  fitRequest: number;
   locked: boolean;
+  historyVersion: number;
   viewportLocked: boolean;
   onImportBusy(busy: boolean): void;
   toolbar: ReactNode;
+  authoring?: ReactNode;
   output: ReactNode;
   activeLink?: string;
   nodeStates: ReadonlyMap<string, string>;
@@ -47,7 +51,7 @@ interface CanvasProps {
   onRetryModels(): void;
 }
 
-export function BlueprintCanvas({ graph, onChange, autoFit, locked, viewportLocked, onImportBusy, toolbar, output, activeLink, nodeStates, modelCatalog, onRetryModels, generatedImages }: CanvasProps) {
+export function BlueprintCanvas({ graph, onChange, onEndEdit, autoFit, fitRequest, historyVersion, locked, viewportLocked, onImportBusy, toolbar, authoring, output, activeLink, nodeStates, modelCatalog, onRetryModels, generatedImages }: CanvasProps) {
   const canvas = useRef<HTMLDivElement>(null);
   const world = useRef<HTMLDivElement>(null);
   const picker = useRef<HTMLInputElement>(null);
@@ -57,6 +61,8 @@ export function BlueprintCanvas({ graph, onChange, autoFit, locked, viewportLock
   const raf = useRef(0);
   const latest = useRef<Point | null>(null);
   const loaded = useRef(false);
+  const fittedRequest = useRef(fitRequest);
+  const handledHistory = useRef(historyVersion);
   const importTask = useRef<AbortController | null>(null);
   const current = useRef(graph);
   current.current = graph;
@@ -106,19 +112,23 @@ export function BlueprintCanvas({ graph, onChange, autoFit, locked, viewportLock
     return () => observer.disconnect();
   }, [nodeIds]);
 
-  const fitted = () => {
-    const surface = canvas.current!;
-    const boxes = current.current.nodes.map((node) => ({ ...node, ...measurements.boxes.get(node.id)! }));
-    return fitView(boxes, surface.clientWidth, surface.clientHeight);
-  };
   const fit = () => {
-    if (viewportLocked || !canvas.current?.clientWidth || measurements.boxes.size !== nodes.size) return;
-    onChange({ ...current.current, viewport: fitted() });
+    const surface = canvas.current;
+    if (viewportLocked || !surface?.clientWidth || !surface.clientHeight) return false;
+    const boxes: Rect[] = [];
+    for (const node of current.current.nodes) {
+      const size = measurements.boxes.get(node.id);
+      if (!size) return false;
+      boxes.push({ x: node.x, y: node.y, ...size });
+    }
+    onChange({ ...current.current, viewport: fitView(boxes, surface.clientWidth, surface.clientHeight) });
+    return true;
   };
   useLayoutEffect(() => {
-    if (!autoFit || loaded.current || measurements.boxes.size !== nodes.size || !canvas.current?.clientWidth) return;
-    loaded.current = true;
-    fit();
+    if ((fittedRequest.current !== fitRequest || (autoFit && !loaded.current)) && fit()) {
+      fittedRequest.current = fitRequest;
+      loaded.current = true;
+    }
   });
 
   const cancel = useCallback(() => {
@@ -130,6 +140,15 @@ export function BlueprintCanvas({ graph, onChange, autoFit, locked, viewportLock
     latest.current = null;
     setPreview({});
   }, []);
+  useLayoutEffect(() => {
+    if (handledHistory.current === historyVersion) return;
+    handledHistory.current = historyVersion;
+    cancel();
+    setArmed(null);
+    setSelection(clearSelection());
+    setMenu(null);
+    setMessage("");
+  }, [cancel, historyVersion]);
   useEffect(() => {
     const blur = () => { space.current = false; cancel(); setArmed(null); };
     window.addEventListener("blur", blur);
@@ -142,13 +161,14 @@ export function BlueprintCanvas({ graph, onChange, autoFit, locked, viewportLock
   useEffect(() => {
     const surface = canvas.current!;
     const wheel = (event: WheelEvent) => {
-      if ((event.target as HTMLElement).closest("textarea, select, .bp-menu")) return;
+      if ((event.target as HTMLElement).closest("textarea, .bp-menu, .bp-node-model")) return;
       event.preventDefault();
       if (viewportLocked || gesture.current) return;
       const rect = surface.getBoundingClientRect();
       const base = current.current;
       const next = zoomAt({ x: event.clientX - rect.left, y: event.clientY - rect.top }, base.viewport, base.viewport.zoom * Math.exp(-event.deltaY * (event.deltaMode ? .07 : .0018)));
       if (next !== base.viewport) {
+        surface.querySelector<HTMLElement>(".bp-model-options:popover-open")?.hidePopover();
         current.current = { ...base, viewport: next };
         onChange(current.current);
       }
@@ -176,7 +196,7 @@ export function BlueprintCanvas({ graph, onChange, autoFit, locked, viewportLock
   function pointerDown(event: PointerEvent<HTMLDivElement>) {
     if (gesture.current || event.button > 1) return;
     const target = event.target as HTMLElement;
-    if (target.closest(".bp-menu")) return;
+    if (target.closest(".bp-menu, .bp-node-model")) return;
     const bounds = event.currentTarget.getBoundingClientRect();
     const start = { x: event.clientX - bounds.left, y: event.clientY - bounds.top };
     const base = { id: event.pointerId, start, bounds };
@@ -245,7 +265,7 @@ export function BlueprintCanvas({ graph, onChange, autoFit, locked, viewportLock
     const end = sample(active, point);
     const moved = Math.abs(point.x - active.start.x) + Math.abs(point.y - active.start.y) >= 3;
     cancel();
-    if (active.kind === "pan" && moved) onChange({ ...current.current, viewport: end.viewport! });
+    if (active.kind === "pan" && moved && !viewportLocked) onChange({ ...current.current, viewport: end.viewport! });
     if (locked) return;
     if (active.kind === "move" && moved) {
       const delta = end.nodeDelta!;
@@ -359,6 +379,7 @@ export function BlueprintCanvas({ graph, onChange, autoFit, locked, viewportLock
         <button type="button" aria-label="放大" disabled={viewportLocked} onClick={() => setZoom(graph.viewport.zoom * 1.15)}>＋</button>
       </div>
     </div>
+    {authoring}
     <div className="bp-canvas" data-file-drop-owner="blueprint" ref={canvas} tabIndex={0} aria-label="无限画布"
       onAuxClick={(event) => { if (event.button === 1) event.preventDefault(); }}
       onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={cancel}
@@ -393,7 +414,10 @@ export function BlueprintCanvas({ graph, onChange, autoFit, locked, viewportLock
           const def = NODE_DEFS[node.type];
           const chosen = selection.nodes.has(node.id);
           const delta = chosen ? preview.nodeDelta : undefined;
-          const changeNode = (next: BlueprintNode) => onChange({ ...graph, nodes: graph.nodes.map((item) => item.id === node.id ? next : item) });
+          const changeNode = (next: BlueprintNode, group?: string) => {
+            const base = current.current;
+            onChange({ ...base, nodes: base.nodes.map((item) => item.id === node.id ? next : item) }, group);
+          };
           const generated = generatedImages?.get(node.id);
           const hasPromptLink = connections.has(endpointKey({ nodeId: node.id, portId: "prompt" }));
           const image = node.type === "image" ? node.asset : null;
@@ -421,14 +445,16 @@ export function BlueprintCanvas({ graph, onChange, autoFit, locked, viewportLock
                 })}
               </div>)}
             </div>
-            {node.type === "text" && <textarea aria-label="文本值" rows={3} disabled={locked} value={node.value} onChange={(event) => changeNode({ ...node, value: event.target.value })}/>}
+            {node.type === "text" && <textarea aria-label="文本值" rows={3} disabled={locked} value={node.value}
+              onChange={(event) => changeNode({ ...node, value: event.target.value }, node.id)} onBlur={() => onEndEdit(node.id)}/>}
             {node.type === "boolean" && <label className="bp-node-control"><input type="checkbox" aria-label="布尔值" checked={node.value} disabled={locked} onChange={(event) => changeNode({ ...node, value: event.target.checked })}/>{node.value ? "真" : "假"}</label>}
             {node.type === "agent" && <AgentModelPicker modelId={node.modelId} catalog={modelCatalog} disabled={locked}
               hasImages={connections.has(endpointKey({ nodeId: node.id, portId: "image" }))}
               onChange={(modelId) => changeNode({ ...node, modelId })} onRetry={onRetryModels}/>}
             {node.type === "imageGen" && <>
               {!hasPromptLink && <textarea aria-label="图像生成提示词" placeholder="描述想生成或修改的画面…" rows={3}
-                disabled={locked} value={node.prompt} onChange={(event) => changeNode({ ...node, prompt: event.target.value })}/>}
+                disabled={locked} value={node.prompt}
+                onChange={(event) => changeNode({ ...node, prompt: event.target.value }, node.id)} onBlur={() => onEndEdit(node.id)}/>}
               <div className="bp-generation">
                 <small>{nodeStates.get(node.id) === "running" ? "正在生成…" : `${connections.has(endpointKey({ nodeId: node.id, portId: "image" })) ? "图生图" : "文生图"} · 主机图片生成设置`}</small>
                 {generated && <>
@@ -502,23 +528,86 @@ function AgentModelPicker({ modelId, catalog, disabled, hasImages, onChange, onR
   onChange(modelId: string | null): void;
   onRetry(): void;
 }) {
+  const id = useId();
+  const trigger = useRef<HTMLButtonElement>(null);
+  const popup = useRef<HTMLDivElement>(null);
   const models = catalog?.models ?? [];
   const current = models.find(({ id }) => id === modelId);
   const vision = models.filter(({ metadata }) => metadata?.supportsImages === true);
   const other = models.filter(({ metadata }) => metadata?.supportsImages !== true);
-  const option = (model: (typeof models)[number], incompatible = false) => {
-    const providerName = model.metadata?.providerName;
-    const provider = typeof providerName === "string" ? providerName : model.id.split("/")[0];
-    return <option key={model.id} value={model.id} disabled={incompatible}>{model.label} · {provider}</option>;
+  const label = (model: (typeof models)[number]) => {
+    const provider = model.metadata?.providerName;
+    return `${model.label} · ${typeof provider === "string" ? provider : model.id.split("/")[0]}`;
   };
+  const selected = current ? label(current) : modelId ?? "主机默认";
+  const option = (value: string | null, text: string, unavailable = false) =>
+    <button key={value} type="button" role="menuitemradio" aria-checked={(modelId ?? null) === value}
+      disabled={unavailable || disabled} tabIndex={-1} onClick={() => {
+        popup.current!.hidePopover();
+        if ((modelId ?? null) !== value) onChange(value);
+        trigger.current!.focus({ preventScroll: true });
+      }}>{text}</button>;
   return <div className="bp-node-model">
-    <label><span>模型</span><select value={modelId ?? ""} disabled={disabled} title={modelId ?? "使用工作区主机的默认模型"}
-      onChange={(event) => onChange(event.target.value || null)}>
-      <option value="">主机默认</option>
-      {modelId && !current && <option value={modelId} disabled>{modelId}</option>}
-      {vision.length > 0 && <optgroup label="支持图片">{vision.map((model) => option(model))}</optgroup>}
-      {other.length > 0 && <optgroup label={hasImages ? "不可用于图片输入" : "其他模型"}>{other.map((model) => option(model, hasImages))}</optgroup>}
-    </select></label>
+    <div className="bp-model-field"><span id={`${id}-label`}>模型</span>
+      <button type="button" ref={trigger} popoverTarget={id} aria-haspopup="menu" disabled={disabled}
+        aria-labelledby={`${id}-label ${id}-value`} title={modelId ?? "使用工作区主机的默认模型"}>
+        <span id={`${id}-value`}>{selected}</span>
+        <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true" fill="none" stroke="currentColor"><path d="m2 4 4 4 4-4"/></svg>
+      </button>
+    </div>
+    <div id={id} ref={popup} popover="auto" className="bp-model-options" role="menu" aria-labelledby={`${id}-label`}
+      onBeforeToggle={(event) => {
+        if (event.newState !== "open") return;
+        // Use viewport coordinates after canvas pan and zoom; the popover is in the top layer.
+        const { left, top, bottom } = trigger.current!.getBoundingClientRect();
+        const { clientWidth, clientHeight } = document.documentElement;
+        const margin = 8, gap = 4, maxHeight = 260;
+        const width = Math.min(290, clientWidth - 2 * margin);
+        const below = clientHeight - bottom - gap - margin;
+        const above = top - gap - margin;
+        const opensAbove = below < maxHeight && above > below;
+        Object.assign(event.currentTarget.style, {
+          width: `${width}px`, left: `${Math.max(margin, Math.min(left, clientWidth - width - margin))}px`,
+          top: opensAbove ? "auto" : `${bottom + gap}px`,
+          bottom: opensAbove ? `${clientHeight - top + gap}px` : "auto",
+          maxHeight: `${Math.min(maxHeight, opensAbove ? above : below)}px`,
+        });
+      }}
+      onToggle={(event) => {
+        if (event.newState !== "open") return;
+        const menu = event.currentTarget;
+        (menu.querySelector<HTMLButtonElement>('button[aria-checked="true"]:enabled') ??
+          menu.querySelector<HTMLButtonElement>("button:enabled"))?.focus();
+      }}
+      onBlur={(event) => {
+        if (event.relatedTarget && event.relatedTarget !== trigger.current &&
+          !event.currentTarget.contains(event.relatedTarget)) event.currentTarget.hidePopover();
+      }}
+      onKeyDown={(event) => {
+        event.stopPropagation();
+        const { key, currentTarget } = event;
+        if (key === "Tab" || key === "Escape") {
+          if (key === "Escape") event.preventDefault();
+          currentTarget.hidePopover();
+          return;
+        }
+        if (key !== "ArrowDown" && key !== "ArrowUp" && key !== "Home" && key !== "End") return;
+        event.preventDefault();
+        const options = Array.from(currentTarget.querySelectorAll<HTMLButtonElement>("button:enabled"));
+        const index = options.indexOf(document.activeElement as HTMLButtonElement);
+        const step = key === "ArrowDown" ? 1 : -1;
+        const next = key === "Home" ? 0 : key === "End" ? options.length - 1
+          : (index + step + options.length) % options.length;
+        options[next]?.focus();
+      }}>
+      {option(null, "主机默认")}
+      {modelId && !current && option(modelId, modelId, true)}
+      {vision.length > 0 && <div role="group" aria-label="支持图片"><small>支持图片</small>
+        {vision.map((model) => option(model.id, label(model)))}</div>}
+      {other.length > 0 && <div role="group" aria-label={hasImages ? "不可用于图片输入" : "其他模型"}>
+        <small>{hasImages ? "不可用于图片输入" : "其他模型"}</small>
+        {other.map((model) => option(model.id, label(model), hasImages))}</div>}
+    </div>
     {!catalog ? <small role="status">正在读取模型…</small>
       : catalog.error ? <button type="button" className="bp-model-retry" disabled={disabled} title={catalog.error} onClick={onRetry}>模型列表加载失败 · 重试</button>
       : modelId && !current ? <small role="status">所选模型已不可用</small>
