@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { View } from 'react-native';
 import type { Config } from '../state.ts';
 import {
+  editConfigDraft,
   editGameEnabled,
   editGameEngineDirectory,
   editSandboxCapability,
@@ -12,6 +13,7 @@ import {
   ActionButton,
   Badge,
   InlineBanner,
+  NumberSettingRow,
   SectionCard,
   SettingRow,
   SwitchControl,
@@ -170,6 +172,19 @@ export function SandboxAndGameSection({
             }
           />
         </SettingRow>
+
+        <NumberSettingRow
+          title="每人每日生图上限"
+          hint="普通绘图与游戏场景共用；进行中的生图也占额度，北京时间 00:00 重置"
+          accessibilityLabel="每人每日生图上限"
+          value={configDraft.imageDailyLimit}
+          min={1}
+          unit="次"
+          disabled={busy}
+          onCommit={next =>
+            applyDraft(() => editConfigDraft(configText, config => ({ ...config, imageDailyLimit: next })))
+          }
+        />
       </SectionCard>
 
       <SectionCard

@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, type ComponentType, type ReactNode } from 'react';
+import React, { createContext, useContext, useEffect, useRef, useState, type ComponentType, type ReactNode } from 'react';
 import {
   Modal,
   Pressable,
@@ -571,6 +571,100 @@ export function TextField({
         <Text style={{ fontSize: 12, lineHeight: 16, color: p.foregroundMuted }}>{hint}</Text>
       ) : null}
     </View>
+  );
+}
+
+export function NumberSettingRow({
+  title,
+  hint,
+  value,
+  min,
+  max,
+  step = 1,
+  unit,
+  disabled,
+  bordered = true,
+  accessibilityLabel,
+  onCommit,
+}: {
+  title: string;
+  hint?: string;
+  value: number;
+  min: number;
+  max?: number;
+  step?: number;
+  unit?: string;
+  disabled: boolean;
+  bordered?: boolean;
+  accessibilityLabel: string;
+  onCommit: (next: number) => void;
+}) {
+  const p = usePalette();
+  const [text, setText] = useState(String(value));
+  const [focused, setFocused] = useState(false);
+  const [invalid, setInvalid] = useState<string | null>(null);
+  const valueAtFocus = useRef(value);
+
+  useEffect(() => {
+    if (!focused) {
+      setText(String(value));
+      setInvalid(null);
+    }
+  }, [value, focused]);
+
+  const handleChange = (raw: string) => {
+    setText(raw);
+    const trimmed = raw.trim();
+    if (!trimmed) {
+      setInvalid(max === undefined ? `请输入不少于 ${min} 的整数` : `范围 ${min}–${max}`);
+      return;
+    }
+    const parsed = Number(trimmed);
+    if (!Number.isFinite(parsed) || (step === 1 && !Number.isSafeInteger(parsed))) {
+      setInvalid('请输入有效整数');
+      return;
+    }
+    if (parsed < min || (max !== undefined && parsed > max)) {
+      setInvalid(max === undefined ? `至少 ${min}` : `需在 ${min}–${max} 之间`);
+      return;
+    }
+    setInvalid(null);
+    if (parsed !== value) onCommit(parsed);
+  };
+
+  const handleBlur = () => {
+    setFocused(false);
+    if (invalid) {
+      setText(String(valueAtFocus.current));
+      setInvalid(null);
+      if (value !== valueAtFocus.current) onCommit(valueAtFocus.current);
+    }
+  };
+
+  return (
+    <SettingRow title={title} hint={hint} bordered={bordered}>
+      <View style={{ alignItems: 'flex-end', gap: 4 }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+          <TextField
+            accessibilityLabel={accessibilityLabel}
+            value={text}
+            editable={!disabled}
+            compact
+            mono
+            keyboardType="numeric"
+            onFocus={() => {
+              valueAtFocus.current = value;
+              setFocused(true);
+            }}
+            onBlur={handleBlur}
+            onChangeText={handleChange}
+            style={{ width: 92, textAlign: 'right' }}
+          />
+          {unit ? <Text style={{ fontSize: 12, color: p.foregroundMuted, minWidth: 28 }}>{unit}</Text> : null}
+        </View>
+        {invalid ? <Text style={{ fontSize: 11, color: p.statusDanger }}>{invalid}</Text> : null}
+      </View>
+    </SettingRow>
   );
 }
 

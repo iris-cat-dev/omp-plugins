@@ -75,7 +75,7 @@ async function fixture(enabled=true,scope:'c2c'|'group'='c2c',gameEnabled=false)
   const gateway=new Gateway(ctx,store,new Pairing(store),values.config,'fixture-secret',{debug:vi.fn(),info:vi.fn(),warn:vi.fn(),error:vi.fn()},vi.fn());
   cleanups.push(()=>gateway.dispose());
   const internal=gateway as unknown as {files:SandboxFiles;root:string;imageGeneration:QQImageGenerator;routes:Map<string,TestRoute>;event(route:TestRoute,stream:OmpAgentStream):Promise<void>;command(context:unknown,text:string):Promise<void>;deliverFile(route:TestRoute,path:string,type:'image',target:ReplyTarget):Promise<void>;bot:QQBot;sender:{sendMarkdown(target:ReplyTarget,text:string):Promise<unknown>}};
-  const generator = new QQImageGenerator({ images: { generate } }, databasePath);
+  const generator = new QQImageGenerator({ images: { generate } }, values.config.imageDailyLimit, databasePath);
   internal.files=files;internal.root=root;internal.imageGeneration=generator;
   const route:TestRoute={peer,agent:{id:'agent'} as OmpAgentHandle,unsubscribe:null,buffer:null,enabledDelivery:false,localTarget:target,textRows:new Map(),files:new Map(),toolRevisions:new Map(),pending:new Map(),sceneImages:new Map(),chain:Promise.resolve(),lastSeq:0};
   internal.routes.set(peerKey('app',scope,'peer'),route);
@@ -312,7 +312,7 @@ async function sceneFixture(mode: 'automatic' | 'waiting' = 'automatic', sandbox
     if (signal.aborted) abort();
     try { return await completion.promise; } finally { signal.removeEventListener('abort', abort); }
   });
-  const generator = new QQImageGenerator({ images: { generate } }, databasePath);
+  const generator = new QQImageGenerator({ images: { generate } }, (await base.store.read()).values.config.imageDailyLimit, databasePath);
   cleanups.push(() => generator.dispose());
   base.internal.imageGeneration = generator;
   const images = new SceneImages(base.root, base.files, base.store, generator);

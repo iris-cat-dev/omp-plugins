@@ -21,6 +21,7 @@ export const ConfigSchema = z.preprocess(value => {
   sandboxEnabled: z.boolean().default(true),
   appId: z.string().default(''), sandboxPath: z.string().trim().refine(path => !path.includes('\0'), '沙箱路径不能包含 NUL').default(''), defaultPreset: z.string().default('default'),
   sandboxCapabilities: z.object({ javascript: z.boolean().default(false), network: z.boolean().default(false), imageGeneration: z.boolean().default(false) }).strict().default(() => ({ javascript: false, network: false, imageGeneration: false })),
+  imageDailyLimit: z.number().int().min(1).default(10),
   game: z.object({ enabled: z.boolean().default(false), engineDirectory: z.string().trim().refine(path => !path.includes('\0'), '引擎路径不能包含 NUL').transform(path => path || DEFAULT_GAME_ENGINE_DIRECTORY).default(DEFAULT_GAME_ENGINE_DIRECTORY) }).strict().default(() => ({ enabled: false, engineDirectory: DEFAULT_GAME_ENGINE_DIRECTORY })),
   presets: z.array(AgentPresetSchema).default([{ name: 'default', config: { provider: 'omp' }, qq: { prompt: '', skills: [], tools: [] } }]),
   requireMention: z.boolean().default(true), groupPrompt: z.string().default(''), directPrompt: z.string().default(''),

@@ -12,7 +12,7 @@ const input: ImageGenerationInput = { prompt: 'Draw one pixel.', images: [] };
 const cleanups: Array<() => void> = [];
 afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); });
 
-function fixture() {
+function fixture(dailyLimit = 10) {
   const directory = mkdtempSync(join(tmpdir(), 'qq-plugin-image-quota-'));
   cleanups.push(() => rmSync(directory, { recursive: true, force: true }));
   const databasePath = join(directory, 'private', 'images.sqlite');
@@ -22,7 +22,7 @@ function fixture() {
     calls++;
     return produce(options!.signal!);
   } } };
-  const generator = new QQImageGenerator(omp, databasePath);
+  const generator = new QQImageGenerator(omp, dailyLimit, databasePath);
   cleanups.push(() => generator.dispose());
   const generate = (senderId = 'alice', signal = new AbortController().signal) => generator.generate(peer, senderId, input, signal);
   const states = () => {
@@ -33,17 +33,35 @@ function fixture() {
   return { generator, omp, databasePath, generate, states, calls: () => calls, setProduce: (next: typeof produce) => { produce = next; } };
 }
 
-it('refuses the eleventh API generation and preserves successful usage after plugin reopen', async () => {
-  const f = fixture();
-  for (let index = 0; index < 10; index++) await f.generate();
+it.each([1, 12])('enforces a configured daily limit of %i and preserves usage after plugin reopen', async dailyLimit => {
+  const f = fixture(dailyLimit);
+  for (let index = 0; index < dailyLimit; index++) await f.generate();
   await expect(f.generate()).rejects.toThrow('QQ_IMAGE_QUOTA_EXHAUSTED');
-  expect(f.calls()).toBe(10);
-  expect(f.states()).toEqual([{ state: 'succeeded', count: 10 }]);
+  expect(f.calls()).toBe(dailyLimit);
+  expect(f.states()).toEqual([{ state: 'succeeded', count: dailyLimit }]);
   f.generator.dispose();
-  const reopened = new QQImageGenerator(f.omp, f.databasePath);
+  const reopened = new QQImageGenerator(f.omp, dailyLimit, f.databasePath);
   cleanups.push(() => reopened.dispose());
   await expect(reopened.generate(peer, 'alice', input, new AbortController().signal)).rejects.toThrow('QQ_IMAGE_QUOTA_EXHAUSTED');
-  expect(f.calls()).toBe(10);
+  expect(f.calls()).toBe(dailyLimit);
+});
+
+it('raising or lowering the configured ceiling never resets existing daily usage', async () => {
+  const f = fixture(3);
+  await f.generate(); await f.generate();
+  f.generator.dispose();
+  const lowered = new QQImageGenerator(f.omp, 1, f.databasePath);
+  cleanups.push(() => lowered.dispose());
+  await expect(lowered.generate(peer, 'alice', input, new AbortController().signal)).rejects.toThrow('QQ_IMAGE_QUOTA_EXHAUSTED');
+  expect(f.calls()).toBe(2);
+  lowered.dispose();
+  const raised = new QQImageGenerator(f.omp, 4, f.databasePath);
+  cleanups.push(() => raised.dispose());
+  await raised.generate(peer, 'alice', input, new AbortController().signal);
+  await raised.generate(peer, 'alice', input, new AbortController().signal);
+  await expect(raised.generate(peer, 'alice', input, new AbortController().signal)).rejects.toThrow('QQ_IMAGE_QUOTA_EXHAUSTED');
+  expect(f.calls()).toBe(4);
+  expect(f.states()).toEqual([{ state: 'succeeded', count: 4 }]);
 });
 
 it('releases only exact host-authorized non-generation failures, preserving room for ten real outputs', async () => {
@@ -87,7 +105,7 @@ it('retains uncertain provider failures, timeout and abort reservations across r
   await started.promise; controller.abort(new Error('sender left')); await aborted;
   expect(f.states()).toEqual([{ state: 'pending', count: 4 }]);
   f.generator.dispose();
-  const reopened = new QQImageGenerator(f.omp, f.databasePath);
+  const reopened = new QQImageGenerator(f.omp, 10, f.databasePath);
   cleanups.push(() => reopened.dispose());
   f.setProduce(async () => image);
   for (let index = 0; index < 6; index++) await reopened.generate(peer, 'alice', input, new AbortController().signal);

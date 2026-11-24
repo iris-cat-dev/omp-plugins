@@ -32,6 +32,7 @@ import {
   CollapsibleRow,
   InlineBanner,
   ModalSheet,
+  NumberSettingRow,
   SectionCard,
   SegmentedControl,
   SettingRow,
@@ -47,95 +48,6 @@ import {
   selectableProviderEntries,
   type HostProvidersState,
 } from './providers.ts';
-
-function NumberSettingRow({
-  title,
-  hint,
-  value,
-  min,
-  max,
-  step = 1,
-  unit,
-  disabled,
-  bordered = true,
-  accessibilityLabel,
-  onCommit,
-}: {
-  title: string;
-  hint?: string;
-  value: number;
-  min: number;
-  max: number;
-  step?: number;
-  unit?: string;
-  disabled: boolean;
-  bordered?: boolean;
-  accessibilityLabel: string;
-  onCommit: (next: number) => void;
-}) {
-  const p = usePalette();
-  const [text, setText] = useState(String(value));
-  const [focused, setFocused] = useState(false);
-  const [invalid, setInvalid] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!focused) {
-      setText(String(value));
-      setInvalid(null);
-    }
-  }, [value, focused]);
-
-  const handleChange = (raw: string) => {
-    setText(raw);
-    const trimmed = raw.trim();
-    if (!trimmed) {
-      setInvalid(`范围 ${min}–${max}`);
-      return;
-    }
-    const parsed = Number(trimmed);
-    if (!Number.isFinite(parsed) || (step === 1 && !Number.isInteger(parsed))) {
-      setInvalid('请输入有效整数');
-      return;
-    }
-    if (parsed < min || parsed > max) {
-      setInvalid(`需在 ${min}–${max} 之间`);
-      return;
-    }
-    setInvalid(null);
-    if (parsed !== value) onCommit(parsed);
-  };
-
-  const handleBlur = () => {
-    setFocused(false);
-    if (invalid) {
-      setText(String(value));
-      setInvalid(null);
-    }
-  };
-
-  return (
-    <SettingRow title={title} hint={hint} bordered={bordered}>
-      <View style={{ alignItems: 'flex-end', gap: 4 }}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-          <TextField
-            accessibilityLabel={accessibilityLabel}
-            value={text}
-            editable={!disabled}
-            compact
-            mono
-            keyboardType="numeric"
-            onFocus={() => setFocused(true)}
-            onBlur={handleBlur}
-            onChangeText={handleChange}
-            style={{ width: 92, textAlign: 'right' }}
-          />
-          {unit ? <Text style={{ fontSize: 12, color: p.foregroundMuted, minWidth: 28 }}>{unit}</Text> : null}
-        </View>
-        {invalid ? <Text style={{ fontSize: 11, color: p.statusDanger }}>{invalid}</Text> : null}
-      </View>
-    </SettingRow>
-  );
-}
 
 export function ModelAndChatSection({
   configDraft,

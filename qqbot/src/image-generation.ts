@@ -23,12 +23,12 @@ export class QQImageGenerator {
   private active = new Set<AbortController>();
   private disposed = false;
 
-  constructor(private omp: Pick<OmpApi, 'images'>, private databasePath = imageQuotaDatabasePath) {}
+  constructor(private omp: Pick<OmpApi, 'images'>, private dailyLimit: number, private databasePath = imageQuotaDatabasePath) {}
 
   async generate(peer: Pick<Peer, 'appId' | 'scope'>, senderId: string, input: ImageGenerationInput, signal: AbortSignal): Promise<GeneratedImage> {
     signal.throwIfAborted();
     if (this.disposed) throw new Error('QQ 图片生成服务已关闭。');
-    const ledger = this.ledger ??= new ImageGenerationQuotaLedger(this.databasePath);
+    const ledger = this.ledger ??= new ImageGenerationQuotaLedger(this.databasePath, this.dailyLimit);
     const requestId = randomUUID();
     const reservation = ledger.reserve(requestId, { appId: peer.appId, scope: peer.scope, senderId });
     if (!reservation.created) throw new Error('QQ 图片请求标识重复，已拒绝生成。');

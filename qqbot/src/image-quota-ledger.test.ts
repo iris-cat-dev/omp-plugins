@@ -20,7 +20,7 @@ function fixture() {
   return { databasePath, ledger: open(databasePath) };
 }
 function open(databasePath: string) {
-  const ledger = new ImageGenerationQuotaLedger(databasePath);
+  const ledger = new ImageGenerationQuotaLedger(databasePath, 10);
   ledgers.push(ledger);
   return ledger;
 }
@@ -90,7 +90,7 @@ describe("durable QQ image reservation quota", () => {
   it("shares the ten-call ceiling between simultaneously running robot processes", async () => {
     const { databasePath } = fixture();
     const program = `import { ImageGenerationQuotaLedger } from ${JSON.stringify(new URL('./image-quota-ledger.ts', import.meta.url).href)};
-const ledger = new ImageGenerationQuotaLedger(${JSON.stringify(databasePath)});
+const ledger = new ImageGenerationQuotaLedger(${JSON.stringify(databasePath)}, 10);
 const start = Promise.withResolvers();
 process.stdin.once('data', () => start.resolve());
 process.stdout.write('READY\\n');

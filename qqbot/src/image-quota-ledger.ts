@@ -3,10 +3,9 @@ import { createRequire } from "node:module";
 import { dirname, isAbsolute } from "node:path";
 
 export const QQ_IMAGE_QUOTA_EXHAUSTED =
-  "QQ_IMAGE_QUOTA_EXHAUSTED: 每人每天最多可成功生成 10 次新图片，今日额度已用完（含处理中请求），北京时间午夜后恢复。";
+  "QQ_IMAGE_QUOTA_EXHAUSTED: 今日生图额度已用完（含处理中请求），北京时间午夜后恢复。";
 export const QQ_IMAGE_QUOTA_IDENTITY_REQUIRED =
   "QQ_IMAGE_QUOTA_IDENTITY_REQUIRED: 无法确认图片请求的 QQ 发送者，已拒绝生成。";
-const DAILY_LIMIT = 10;
 
 export interface QQImageQuotaContext {
   appId: string;
@@ -49,8 +48,10 @@ export class ImageGenerationQuotaLedger {
   private readonly countReservations: QuotaStatement;
   private readonly insertReservation: QuotaStatement;
   private readonly settleReservation: QuotaStatement;
+  private readonly dailyLimit: number;
 
-  constructor(databasePath: string) {
+  constructor(databasePath: string, dailyLimit: number) {
+    this.dailyLimit = dailyLimit;
     if (!isAbsolute(databasePath)) throw new Error("QQ image quota database must be absolute");
     const directory = dirname(databasePath);
     mkdirSync(directory, { recursive: true, mode: 0o700 });
@@ -111,7 +112,7 @@ export class ImageGenerationQuotaLedger {
         return { created: false, state: existing.state, day: existing.day };
       }
       const count = this.countReservations.get(quota.appId, quota.scope, quota.senderId, day) as { used: number };
-      if (count.used >= DAILY_LIMIT) throw new Error(QQ_IMAGE_QUOTA_EXHAUSTED);
+      if (count.used >= this.dailyLimit) throw new Error(QQ_IMAGE_QUOTA_EXHAUSTED);
       this.insertReservation.run(requestId, quota.appId, quota.scope, quota.senderId, day);
       this.database.exec("COMMIT");
       return { created: true, state: "pending", day };

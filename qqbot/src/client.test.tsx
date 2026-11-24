@@ -434,6 +434,24 @@ describe('QQBot refactored settings UI', () => {
     f.controller.abort();
   });
 
+  it.each([
+    { kind: 'fractional', prefix: '12', invalid: '12.5' },
+    { kind: 'unsafe integer', prefix: '900719925474099', invalid: '9007199254740992' },
+  ])('discards the valid typing prefix of an invalid $kind image quota edit', async ({ prefix, invalid }) => {
+    const f = createFixture({ appId: '102078234' });
+    await screen.findByTestId('qqbot-section-model');
+    fireEvent.click(screen.getByTestId('qqbot-tab-sandbox'));
+    const input = await screen.findByLabelText('每人每日生图上限') as HTMLInputElement;
+    const before = input.value;
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: prefix } });
+    fireEvent.change(input, { target: { value: invalid } });
+    fireEvent.blur(input);
+    expect(input.value).toBe(before);
+    expect(screen.queryByTestId('qqbot-unsaved-bar')).toBeNull();
+    f.controller.abort();
+  });
+
   it('renders peer agents cleanly without literal \\n and supports access mode + member rename', async () => {
     const f = createFixture({ appId: '102078234' });
     await screen.findByTestId('qqbot-section-model');

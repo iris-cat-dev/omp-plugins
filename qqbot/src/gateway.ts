@@ -100,7 +100,7 @@ export class Gateway {
   private gameDatabasePath() { return resolve(this.gameDataRoot(), 'xiuxian.sqlite'); }
   private protocolMatches(peer: Peer) { return peer.protocolVersion === CONTEXT_PROTOCOL_VERSION && peer.protocolPrompt.endsWith(IMAGE_REQUEST_PROTOCOL) === this.config.sandboxCapabilities.imageGeneration && (this.config.game.enabled ? !!this.game && peer.protocolPrompt.includes(this.game.protocol.version) : !/qqbot-host-game-/.test(peer.protocolPrompt)); }
   private matchesConfig(config: Config) {
-    return !this.signal.aborted && config.appId === this.config.appId && config.sandboxEnabled === this.config.sandboxEnabled && config.sandboxPath === this.config.sandboxPath && config.game.enabled === this.config.game.enabled && config.game.engineDirectory === this.config.game.engineDirectory && config.sandboxCapabilities.javascript === this.config.sandboxCapabilities.javascript && config.sandboxCapabilities.network === this.config.sandboxCapabilities.network && config.sandboxCapabilities.imageGeneration === this.config.sandboxCapabilities.imageGeneration;
+    return !this.signal.aborted && config.appId === this.config.appId && config.sandboxEnabled === this.config.sandboxEnabled && config.sandboxPath === this.config.sandboxPath && config.game.enabled === this.config.game.enabled && config.game.engineDirectory === this.config.game.engineDirectory && config.sandboxCapabilities.javascript === this.config.sandboxCapabilities.javascript && config.sandboxCapabilities.network === this.config.sandboxCapabilities.network && config.sandboxCapabilities.imageGeneration === this.config.sandboxCapabilities.imageGeneration && config.imageDailyLimit === this.config.imageDailyLimit;
   }
   private matchesSandbox(sandbox: Peer['sandbox'], root: string, legacyImage = false) {
     if (!this.config.sandboxEnabled) return sandbox === undefined;
@@ -654,7 +654,7 @@ export class Gateway {
         try {
           await this.sandboxRoot();
           if (!this.files || !this.root) throw new Error('QQ 场景图片沙箱尚未就绪。');
-          this.imageGeneration ??= new QQImageGenerator(this.ctx.omp);
+          this.imageGeneration ??= new QQImageGenerator(this.ctx.omp, this.config.imageDailyLimit);
           this.sceneImages ??= new SceneImages(this.root, this.files, this.store, this.imageGeneration);
           const buffer = await this.sceneImages.get({ scene, signal, peer: route.peer, senderId });
           this.sceneMaterials ??= new SceneImageMaterials(this.store, this.config.appId, async (method, path, body, requestSignal) => {
@@ -669,7 +669,7 @@ export class Gateway {
           });
         } catch (error) {
           if (this.signal.aborted || image.controller.signal.aborted || !await this.currentSceneImage(route, image)) return;
-          quotaNotice = imageQuotaFailure(error);
+          quotaNotice = imageQuotaFailure(error, this.config.imageDailyLimit);
           if (!quotaNotice) this.report(error);
         }
         clearTimeout(waiting); await progress;
@@ -822,7 +822,7 @@ export class Gateway {
       }
       await this.files!.mkdir('.qqbot-media/generated');
       signal.throwIfAborted();
-      this.imageGeneration ??= new QQImageGenerator(this.ctx.omp);
+      this.imageGeneration ??= new QQImageGenerator(this.ctx.omp, this.config.imageDailyLimit);
       const image = await this.imageGeneration.generate(route.peer, pending.senderId, { prompt: request.prompt, images: references }, signal);
       signal.throwIfAborted();
       await this.activeRoute(route);
@@ -836,7 +836,7 @@ export class Gateway {
       route.files.set(path, { name: basename(path), mimeType: image.mimeType, generatedTurnId: pending.turnId });
     } catch (error) {
       if (signal.aborted) return;
-      const notice = imageQuotaFailure(error);
+      const notice = imageQuotaFailure(error, this.config.imageDailyLimit);
       if (!notice) this.report(error);
       await this.sender.sendMarkdown(pending.target, notice ?? '生图失败，请检查参考图片或在 Desktop 查看详情。');
     } finally {
