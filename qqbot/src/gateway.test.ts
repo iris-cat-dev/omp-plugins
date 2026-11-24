@@ -97,6 +97,7 @@ it.each([false, true])('failed tool events stay internal while the final reply s
   }
 });
 
+
 function queuedConversation(autoCompactTokens=0) {
   const values = StateSchema.parse({ config: { appId: 'test-account', streaming: false, autoCompactTokens } });
   const storage = { get: async () => ({ revision: 0, values: structuredClone(values) }), patch: vi.fn() } as unknown as PluginStorage;
