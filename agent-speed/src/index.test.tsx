@@ -5,11 +5,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PluginClientContext, PluginTurnMetricProps, PluginTurnMetricContribution } from "@omp-desktop/plugin";
 import setup from "./index";
 
-vi.mock("react-native-unistyles", () => ({
-  StyleSheet: { create: (factory: (theme: unknown) => unknown) => factory({
-    colors: { foregroundMuted: "gray", surface2: "white" }, borderRadius: { full: 999 }, spacing: { 2: 8 },
-  }) },
-}));
+vi.mock("lucide-react-native", () => ({ Zap: () => null }));
+vi.mock("react-native-unistyles", () => {
+  const theme = { colors: { foregroundMuted: "gray" }, spacing: { 1: 4 } };
+  return {
+    StyleSheet: { create: (factory: (theme: unknown) => unknown) => factory(theme) },
+    useUnistyles: () => ({ theme }),
+  };
+});
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({ i18n: { language: "en" }, t: (_key: string, values: { speed: string }) => `${values.speed} t/s` }),
 }));
@@ -50,7 +53,9 @@ describe("builtin speed contribution", () => {
     const Metric = running.addTurnMetric.mock.calls[0][0].component;
     const input = props(true);
     const view = render(<Metric {...input} />);
-    expect(screen.getByText("40.0 t/s · Estimated")).toBeTruthy();
+    expect(screen.getByTestId("turn-token-output-speed").getAttribute("aria-label")).toBe(
+      "40.0 t/s, Estimated",
+    );
     expect(screen.getByTitle(/^Estimated: 40\.0 t\/s/)).toBeTruthy();
     view.rerender(<Metric {...input} visible={false} />);
     expect(screen.queryByText(/t\/s/)).toBeNull();

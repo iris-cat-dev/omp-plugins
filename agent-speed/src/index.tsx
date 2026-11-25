@@ -1,12 +1,15 @@
+import { Zap } from "lucide-react-native";
 import React from "react";
 import { Platform, Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
-import { StyleSheet } from "react-native-unistyles";
+import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import type { PluginClientContext, PluginSettingsPageProps, PluginTurnMetricProps } from "@omp-desktop/plugin";
 import { calculateCompletedOutputRate } from "./completed";
 import { formatOutputTokenSpeed } from "./metrics";
 import { turnMetricKey, useOutputRate } from "./use-output-rate";
 import { AgentSpeedSettings } from "./settings.js";
+
+type MetricTheme = { colors: { foregroundMuted: string }; spacing: { 1: number } };
 
 export default function setup(ctx: PluginClientContext) {
   function Settings(props: PluginSettingsPageProps) {
@@ -16,6 +19,7 @@ export default function setup(ctx: PluginClientContext) {
   if (ctx.mode !== "active") return;
   function AgentSpeedMetric(props: PluginTurnMetricProps) {
     const { t, i18n } = useTranslation();
+    const { theme } = useUnistyles();
     const rate = useOutputRate(
       turnMetricKey(props.hostId, props.agentId, props.turnId),
       props.visible && props.active && !props.cancelling,
@@ -37,11 +41,12 @@ export default function setup(ctx: PluginClientContext) {
       : `${source}: ${label}; ${zh ? "有效自身 output / 实测请求时长" : "valid own output / measured request duration"}`;
     const text = (
       <Text style={styles.text} accessibilityLabel={`${label}, ${source}`} accessibilityHint={tooltip} testID={props.active ? "turn-token-output-speed" : "turn-avg-speed"}>
-        {label} · {source}
+        {props.active ? `${speed} t/s` : `${label} · ${source}`}
       </Text>
     );
     return (
       <View style={props.active ? styles.live : undefined}>
+        {props.active ? <Zap size={13} color={(theme as MetricTheme).colors.foregroundMuted} aria-hidden /> : null}
         {Platform.OS === "web" ? React.createElement("span", { title: tooltip }, text) : text}
       </View>
     );
@@ -49,15 +54,12 @@ export default function setup(ctx: PluginClientContext) {
   return ctx.addTurnMetric({ id: "output-speed", component: AgentSpeedMetric });
 }
 
-const styles = StyleSheet.create((theme: { borderRadius: { full: number }; colors: { surface2: string; foregroundMuted: string }; spacing: { 2: number } }) => ({
+const styles = StyleSheet.create((theme: MetricTheme) => ({
   live: {
-    height: 24,
-    flexShrink: 0,
+    flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
-    borderRadius: theme.borderRadius.full,
-    backgroundColor: theme.colors.surface2,
-    paddingHorizontal: theme.spacing[2],
+    gap: theme.spacing[1],
+    flexShrink: 0,
   },
   text: {
     color: theme.colors.foregroundMuted,
