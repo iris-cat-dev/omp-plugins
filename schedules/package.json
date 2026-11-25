@@ -1,6 +1,6 @@
 {
   "name": "@omp-desktop/plugin-schedules",
-  "version": "0.7.3",
+  "version": "0.7.4",
   "description": "Optional daemon-owned recurring agent schedules and heartbeats",
   "type": "module",
   "license": "AGPL-3.0-only",
@@ -23,7 +23,7 @@
     "capabilities": ["agents.create", "agents.events", "agents.prompt", "agents.configuration", "agents.tools", "events.changed", "files.scoped"]
   },
   "dependencies": {"zod": "^4.4.3"},
-  "peerDependencies": {"@omp-desktop/plugin": "0.7.3", "@omp-desktop/protocol": "0.7.3", "@omp-desktop/client": "0.7.3", "react": "*", "react-native": "*", "react-i18next": "*", "i18next": "*"},
+  "peerDependencies": {"@omp-desktop/plugin": "0.7.4", "@omp-desktop/protocol": "0.7.4", "@omp-desktop/client": "0.7.4", "react": "*", "react-native": "*", "react-i18next": "*", "i18next": "*"},
   "peerDependenciesMeta": {"react-native": {"optional": true}},
   "devDependencies": {"esbuild": "0.28.2", "typescript": "^5.9.3", "@types/node": "^20.9.0", "@types/react": "~19.2.0", "vitest": "^4.1.6"},
   "engines": {"node": ">=22"}

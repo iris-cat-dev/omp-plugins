@@ -1,6 +1,6 @@
 {
   "name": "@omp-desktop/plugin-blueprint-canvas",
-  "version": "0.7.3",
+  "version": "0.7.4",
   "description": "An infinite workspace canvas for runnable blueprints",
   "private": true,
   "type": "module",
@@ -29,10 +29,10 @@
     "capabilities": ["storage.scoped", "workspace.files", "agents.events", "agents.create", "agents.prompt", "images.generate"]
   },
   "peerDependencies": {
-    "@omp-desktop/plugin": "0.7.3",
-    "@omp-desktop/client": "0.7.3",
+    "@omp-desktop/plugin": "0.7.4",
+    "@omp-desktop/client": "0.7.4",
     "react": "19.1.0"
   },
-  "dependencies": { "@omp-desktop/protocol": "0.7.3", "zod": "^4.4.3" },
+  "dependencies": { "@omp-desktop/protocol": "0.7.4", "zod": "^4.4.3" },
   "devDependencies": { "@types/react": "~19.2.0", "vitest": "^4.1.6" }
 }

@@ -1,6 +1,6 @@
 {
   "name": "@omp-desktop/plugin-qqbot",
-  "version": "0.7.3",
+  "version": "0.7.4",
   "description": "QQ 连接：daemon 网关、账号访问与 Desktop agent 对话",
   "type": "module",
   "license": "MIT",
@@ -10,7 +10,7 @@
   "ompDesktop": {"apiVersion": 1, "id": "qqbot", "owner": "daemon", "entries": {"client": "./dist/client.mjs", "service": "./dist/service.cjs"}, "capabilities": ["agents.create", "agents.configuration", "agents.events", "agents.prompt", "agents.permissions", "images.generate", "files.scoped", "secrets.scoped"]},
   "dependencies": {"@tencent-connect/qqbot-nodejs": "1.0.5", "@tencent-connect/qqbot-connector": "1.2.0", "qrcode": "^1.5.4", "zod": "^4.4.3", "yaml": "2.8.1"},
   "optionalDependencies": {"silk-wasm": "^3.7.1", "mpg123-decoder": "^1.0.3"},
-  "peerDependencies": {"@omp-desktop/plugin": "0.7.3", "@omp-desktop/protocol": "0.7.3", "@omp-desktop/client": "0.7.3", "react": "*", "react-native": "*", "react-native-unistyles": "*", "lucide-react-native": "*"},
+  "peerDependencies": {"@omp-desktop/plugin": "0.7.4", "@omp-desktop/protocol": "0.7.4", "@omp-desktop/client": "0.7.4", "react": "*", "react-native": "*", "react-native-unistyles": "*", "lucide-react-native": "*"},
   "peerDependenciesMeta": {"react-native": {"optional": true}, "react-native-unistyles": {"optional": true}, "lucide-react-native": {"optional": true}},
   "devDependencies": {"esbuild": "0.28.2", "typescript":"^5.9.3", "@types/node":"^20.9.0", "@types/react":"~19.2.0", "@types/qrcode": "^1.5.5", "@types/ws": "^8.18.1", "vitest": "^4.1.6", "ws": "^8.18.0"},
   "engines": {"node": ">=22"}
